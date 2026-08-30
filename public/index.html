@@ -327,6 +327,10 @@ const JST_OFFSET_MS = 9 * 3600 * 1000;
 const DAY_MS = 86400000;
 const MAX_BUCKETS = 62;          // 1 区間 = 1 リクエスト。取りすぎない上限。
 const BREAKDOWN_CONCURRENCY = 4;
+const BUCKET_TARGET = 24;        // 指定期間をだいたい 24 分割する
+/** 区間の刻み候補（分）。1440 以下は 1 日を割り切る値だけにして、境界を JST の時刻に揃える。 */
+const BUCKET_STEPS_MS = [5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880, 10080, 20160]
+  .map((minutes) => minutes * 60000);
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -350,7 +354,6 @@ let breakdownRunning = false;
 let countAbort = null;
 
 const nf = new Intl.NumberFormat("ja-JP");
-const jstDateLabel = (ms) => new Date(ms + JST_OFFSET_MS).toISOString().slice(0, 10);
 const jstStamp = (ms) => new Date(ms + JST_OFFSET_MS).toISOString().slice(0, 16).replace("T", " ");
 
 // ── 日付 + 時:分（24 時間表記） ────────────────────────────
@@ -472,21 +475,50 @@ async function runCount() {
 }
 
 // ── 区間分割 ────────────────────────────────────────────────
-/** JST の暦日（長い期間なら 7 日）で区切る。両端は指定時刻で切り落とす。 */
+/** 指定期間が 24 分割前後になる刻みを選ぶ。1 日なら 1 時間、1 週間なら 6 時間、といった具合。 */
+function chooseStep(spanMs) {
+  let best = BUCKET_STEPS_MS[BUCKET_STEPS_MS.length - 1];
+  let bestDistance = Infinity;
+  for (const step of BUCKET_STEPS_MS) {
+    const count = Math.ceil(spanMs / step);
+    if (count > MAX_BUCKETS) continue;
+    const distance = Math.abs(count - BUCKET_TARGET);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = step;
+    }
+  }
+  return best;
+}
+
+function stepName(stepMs) {
+  const minutes = stepMs / 60000;
+  if (minutes < 60) return `${minutes} 分ごと`;
+  if (minutes < 1440) return `${minutes / 60} 時間ごと`;
+  if (minutes === 1440) return "日別";
+  if (minutes % 10080 === 0) return `${minutes / 10080} 週間ごと`;
+  return `${minutes / 1440} 日ごと`;
+}
+
+/** 区間の頭は JST のきりの良い時刻に揃える。両端は指定時刻で切り落とす。 */
 function makeBuckets(fromMs, toMs) {
-  const days = (toMs - fromMs) / DAY_MS;
-  // 両端が半端な日だと区間が 1 つ増えるので、日割りは MAX_BUCKETS - 1 日まで。
-  const step = days > MAX_BUCKETS - 1 ? 7 : 1;
+  const stepMs = chooseStep(toMs - fromMs);
   const out = [];
   let start = fromMs;
   while (start < toMs && out.length < MAX_BUCKETS) {
-    const jstDayIndex = Math.floor((start + JST_OFFSET_MS) / DAY_MS);
-    const nextBoundary = (jstDayIndex + step) * DAY_MS - JST_OFFSET_MS;
+    const nextBoundary = (Math.floor((start + JST_OFFSET_MS) / stepMs) + 1) * stepMs - JST_OFFSET_MS;
     const end = Math.min(nextBoundary, toMs);
-    out.push({ start, end, label: jstDateLabel(start), count: null });
+    out.push({ start, end, label: bucketLabel(start, stepMs), count: null });
     start = end;
   }
-  return { buckets: out, step, truncated: start < toMs };
+  return { buckets: out, stepMs, truncated: start < toMs };
+}
+
+/** 1 日未満の刻みは時刻で、日をまたぐ頭だけ日付で示す。 */
+function bucketLabel(ms, stepMs) {
+  const jst = new Date(ms + JST_OFFSET_MS).toISOString();
+  if (stepMs >= DAY_MS) return jst.slice(5, 10);
+  return jst.slice(11, 16) === "00:00" ? jst.slice(5, 10) : jst.slice(11, 16);
 }
 
 function resetBreakdown() {
@@ -508,12 +540,12 @@ async function loadBreakdown() {
     return showMsg(els.breakdownMsg, "先に期間を指定してください", true);
   }
 
-  const { buckets, step, truncated } = makeBuckets(fromMs, toMs);
+  const { buckets, stepMs, truncated } = makeBuckets(fromMs, toMs);
   lastBuckets = buckets;
   breakdownRunning = true;
   els.loadBreakdown.disabled = true;
   els.loadBreakdown.innerHTML = '<span class="spinner"></span>取得中';
-  els.breakdownTitle.textContent = step === 1 ? "日別の内訳" : "週別の内訳";
+  els.breakdownTitle.textContent = `${stepName(stepMs)}の内訳`;
   els.breakdownSub.textContent = `${buckets.length} 区間 × 1 リクエスト`;
   showMsg(els.breakdownMsg, truncated ? `区間が多すぎるため先頭 ${MAX_BUCKETS} 区間だけ表示しています。` : "");
   els.chartArea.hidden = false;
@@ -607,7 +639,7 @@ function renderChart() {
 
     const tick = document.createElement("div");
     tick.className = "xtick";
-    tick.textContent = index % tickEvery === 0 ? bucket.label.slice(5) : "";
+    tick.textContent = index % tickEvery === 0 ? bucket.label : "";
     els.xaxis.appendChild(tick);
   });
 }

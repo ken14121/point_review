@@ -225,7 +225,11 @@ export default {
     const url = new URL(request.url);
 
     if (!url.pathname.startsWith("/api/")) {
-      // 静的アセットに一致しなかった非 API パスはトップへ。
+      // 静的アセットに一致しなかったパス。ページ遷移だけトップへ送り、
+      // favicon.ico のようなサブリソース要求には HTML を返さず 404 にする。
+      if (!(request.headers.get("accept") || "").includes("text/html")) {
+        return new Response("not found", { status: 404 });
+      }
       return Response.redirect(new URL("/", url).toString(), 302);
     }
     if (request.method !== "GET") {

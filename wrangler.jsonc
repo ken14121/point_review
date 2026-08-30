@@ -1,0 +1,19 @@
+{
+  "name": "point-review",
+  "compatibility_date": "2025-01-01",
+  "main": "src/index.js",
+  "assets": {
+    "directory": "./public"
+  },
+  "vars": {
+    // 42Tokyo。他キャンパスなら /v2/campus?page[size]=100 で調べて差し替える。
+    "CAMPUS_ID": "26",
+    "CAMPUS_NAME": "42Tokyo",
+    "CAMPUS_TZ": "Asia/Tokyo",
+    // セール開始の既定値。空ならブラウザ側で保存した値を使う。例: "2026-08-25T18:00:00+09:00"
+    "SALE_START": ""
+  },
+  "observability": {
+    "enabled": true
+  }
+}

@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>レビュー件数カウンター</title>
+<style>
+:root{
+  color-scheme: light;
+  --bg:#f4f4f2;
+  --surface-1:#fcfcfb;
+  --text-primary:#0b0b0b;
+  --text-secondary:#52514e;
+  --text-muted:#78776f;
+  --line:#e3e2dd;
+  --grid:#eceae5;
+  --series-1:#2a78d6;
+  --series-1-soft:#cde2fb;
+  --danger:#e34948;
+  --radius:10px;
+  --sans:-apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --bg:#111110;
+    --surface-1:#1a1a19;
+    --text-primary:#ffffff;
+    --text-secondary:#c3c2b7;
+    --text-muted:#8f8e85;
+    --line:#2e2e2b;
+    --grid:#272724;
+    --series-1:#3987e5;
+    --series-1-soft:#184f95;
+    --danger:#e66767;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --bg:#111110;
+  --surface-1:#1a1a19;
+  --text-primary:#ffffff;
+  --text-secondary:#c3c2b7;
+  --text-muted:#8f8e85;
+  --line:#2e2e2b;
+  --grid:#272724;
+  --series-1:#3987e5;
+  --series-1-soft:#184f95;
+  --danger:#e66767;
+}
+
+*{box-sizing:border-box;margin:0;padding:0;}
+body{
+  font-family:var(--sans);
+  background:var(--bg);
+  color:var(--text-primary);
+  font-size:14px;
+  line-height:1.6;
+  padding:28px 20px 64px;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:860px;margin:0 auto;}
+
+header{margin-bottom:22px;}
+h1{font-size:19px;font-weight:600;letter-spacing:.01em;}
+header p{color:var(--text-secondary);font-size:12.5px;margin-top:4px;}
+
+.card{
+  background:var(--surface-1);
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  padding:18px 20px;
+  margin-bottom:16px;
+}
+
+/* ── 期間フィルタ ── */
+.filters{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;}
+.field{display:flex;flex-direction:column;gap:5px;}
+.field > label{font-size:11.5px;color:var(--text-secondary);letter-spacing:.02em;}
+
+/* 日付 + 24 時間表記の時:分。AM/PM は使わない。 */
+.datetime{display:flex;align-items:stretch;gap:6px;}
+input[type="date"], input[type="number"]{
+  font-family:inherit;font-size:13px;
+  color:var(--text-primary);background:var(--bg);
+  border:1px solid var(--line);border-radius:6px;
+  padding:7px 9px;
+  font-variant-numeric:tabular-nums;
+}
+input[type="date"]{min-width:150px;}
+.clock{
+  display:flex;align-items:center;gap:2px;
+  border:1px solid var(--line);border-radius:6px;background:var(--bg);
+  padding:0 7px;
+}
+.clock input[type="number"]{
+  border:none;background:none;padding:7px 0;
+  width:3.1em;text-align:center;
+  -moz-appearance:textfield;
+}
+.clock span{color:var(--text-muted);font-size:13px;user-select:none;}
+input:focus-visible{outline:2px solid var(--series-1);outline-offset:1px;}
+.clock:focus-within{outline:2px solid var(--series-1);outline-offset:1px;}
+
+button{
+  font-family:inherit;font-size:12.5px;
+  color:var(--text-primary);background:var(--surface-1);
+  border:1px solid var(--line);border-radius:6px;
+  padding:7px 13px;cursor:pointer;transition:border-color .15s, background .15s;
+  display:inline-flex;align-items:center;gap:7px;
+}
+button:hover:not(:disabled){border-color:var(--text-muted);}
+button:focus-visible{outline:2px solid var(--series-1);outline-offset:1px;}
+button.primary{background:var(--series-1);border-color:var(--series-1);color:#fff;font-weight:600;}
+button.primary:hover:not(:disabled){filter:brightness(1.06);}
+button:disabled{opacity:.6;cursor:default;}
+
+.presets{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line);}
+.presets > span{font-size:11.5px;color:var(--text-muted);align-self:center;margin-right:3px;}
+
+/* ── ぐるぐる ── */
+.spinner{
+  width:14px;height:14px;flex:none;
+  border:2px solid var(--series-1-soft);
+  border-top-color:var(--series-1);
+  border-radius:50%;
+  animation:spin .7s linear infinite;
+}
+button.primary .spinner{border-color:rgba(255,255,255,.4);border-top-color:#fff;}
+.spinner.big{width:17px;height:17px;}
+@keyframes spin{to{transform:rotate(360deg);}}
+@media (prefers-reduced-motion: reduce){ .spinner{animation-duration:2.4s;} }
+
+/* ── ヒーロー数値 ── */
+.hero .label{font-size:12.5px;color:var(--text-secondary);display:flex;align-items:center;gap:8px;}
+.hero .value{
+  font-size:60px;font-weight:600;line-height:1.05;letter-spacing:-.02em;
+  margin:6px 0 2px;transition:opacity .18s;
+}
+.hero .value.stale{opacity:.32;}
+.hero .value.empty{color:var(--text-muted);}
+.hero .value .placeholder{font-size:30px;font-weight:400;letter-spacing:.1em;}
+.hero .unit{font-size:20px;font-weight:500;color:var(--text-secondary);margin-left:6px;letter-spacing:0;}
+.hero .range{font-size:12px;color:var(--text-muted);font-variant-numeric:tabular-nums;}
+
+.substats{display:flex;flex-wrap:wrap;gap:26px;margin-top:18px;padding-top:16px;border-top:1px solid var(--line);transition:opacity .18s;}
+.substats.stale{opacity:.32;}
+.substat .label{font-size:11.5px;color:var(--text-secondary);}
+.substat .value{font-size:19px;font-weight:600;margin-top:2px;}
+.substat .value small{font-size:12px;font-weight:400;color:var(--text-secondary);margin-left:3px;}
+
+/* ── 内訳チャート ── */
+.section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+.section-head h2{font-size:14px;font-weight:600;}
+.section-head .sub{font-size:11.5px;color:var(--text-muted);}
+.chart-actions{display:flex;gap:7px;flex:none;}
+
+.chart{position:relative;margin-top:20px;padding-left:42px;}
+.chart .gridlines{position:absolute;inset:0 0 22px 42px;pointer-events:none;}
+.chart .gridline{position:absolute;left:0;right:0;border-top:1px solid var(--grid);}
+.chart .gridline span{
+  position:absolute;right:calc(100% + 8px);top:-.7em;
+  font-size:10.5px;color:var(--text-muted);
+  font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.bars{position:relative;display:flex;align-items:flex-end;gap:2px;height:170px;}
+.bar{
+  flex:1 1 0;min-width:3px;position:relative;
+  display:flex;align-items:flex-end;justify-content:center;
+  height:100%;cursor:default;
+}
+.bar i{
+  display:block;width:100%;
+  background:var(--series-1);
+  border-radius:4px 4px 0 0;
+  min-height:2px;
+  transition:height .25s ease;
+}
+.bar.pending i{background:var(--series-1-soft);}
+.bar:hover i{filter:brightness(1.12);}
+.bar .peak{
+  position:absolute;bottom:calc(100% + 3px);left:50%;transform:translateX(-50%);
+  font-size:10.5px;font-weight:600;color:var(--text-secondary);
+  font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.xaxis{display:flex;gap:2px;margin-top:6px;height:16px;}
+.xtick{flex:1 1 0;min-width:3px;font-size:10px;color:var(--text-muted);text-align:center;white-space:nowrap;}
+
+.tooltip{
+  position:fixed;z-index:20;pointer-events:none;opacity:0;transition:opacity .12s;
+  background:var(--surface-1);border:1px solid var(--line);border-radius:6px;
+  padding:7px 10px;font-size:12px;line-height:1.5;
+  box-shadow:0 4px 14px rgba(0,0,0,.14);
+}
+.tooltip.on{opacity:1;}
+.tooltip b{font-weight:600;font-variant-numeric:tabular-nums;}
+.tooltip .t-date{color:var(--text-secondary);font-size:11px;}
+
+table{border-collapse:collapse;width:100%;margin-top:14px;font-size:12.5px;}
+th,td{text-align:left;padding:5px 10px 5px 0;border-bottom:1px solid var(--line);}
+th{font-weight:600;color:var(--text-secondary);font-size:11.5px;}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0;}
+.tablewrap{max-height:320px;overflow:auto;}
+
+.msg{font-size:12.5px;color:var(--text-secondary);margin-top:12px;}
+.msg.error{color:var(--danger);}
+.progress{font-size:11.5px;color:var(--text-muted);font-variant-numeric:tabular-nums;margin-top:10px;display:flex;align-items:center;gap:7px;}
+footer{margin-top:22px;font-size:11.5px;color:var(--text-muted);line-height:1.75;}
+footer code{font-size:11px;background:var(--surface-1);border:1px solid var(--line);border-radius:4px;padding:1px 5px;}
+[hidden]{display:none !important;}
+@media(max-width:560px){
+  .hero .value{font-size:46px;}
+  .field{flex:1 1 100%;}
+  input[type="date"]{flex:1 1 auto;min-width:0;}
+  .datetime{flex-wrap:nowrap;}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>レビュー件数カウンター</h1>
+  <p id="subtitle">指定した期間に完了したレビューの件数を 42 API から数えます。</p>
+</header>
+
+<section class="card">
+  <div class="filters">
+    <div class="field">
+      <label for="from-date">開始（JST）</label>
+      <div class="datetime">
+        <input type="date" id="from-date">
+        <div class="clock">
+          <input type="number" id="from-h" min="0" max="24" step="1" inputmode="numeric" aria-label="開始の時（0〜24）">
+          <span>:</span>
+          <input type="number" id="from-m" min="0" max="59" step="1" inputmode="numeric" aria-label="開始の分（0〜59）">
+        </div>
+      </div>
+    </div>
+    <div class="field">
+      <label for="to-date">終了（JST）</label>
+      <div class="datetime">
+        <input type="date" id="to-date">
+        <div class="clock">
+          <input type="number" id="to-h" min="0" max="24" step="1" inputmode="numeric" aria-label="終了の時（0〜24）">
+          <span>:</span>
+          <input type="number" id="to-m" min="0" max="59" step="1" inputmode="numeric" aria-label="終了の分（0〜59）">
+        </div>
+      </div>
+    </div>
+    <button class="primary" id="run">集計</button>
+    <button id="now">終了を今にする</button>
+  </div>
+  <div class="presets">
+    <span>プリセット</span>
+    <button data-preset="sale">セール開始から</button>
+    <button data-preset="today">今日</button>
+    <button data-preset="7d">直近 7 日</button>
+    <button data-preset="30d">直近 30 日</button>
+    <button id="save-sale" title="いまの開始日時をセール開始として保存します">開始をセール開始として保存</button>
+  </div>
+  <p class="msg" id="filter-msg" hidden></p>
+</section>
+
+<section class="card hero">
+  <div class="label">
+    <span>この期間に完了したレビュー</span>
+    <span class="spinner big" id="hero-spinner" hidden></span>
+  </div>
+  <div class="value empty" id="total"><span class="placeholder">—</span><span class="unit">件</span></div>
+  <div class="range" id="range-label">—</div>
+  <div class="substats" id="substats" hidden>
+    <div class="substat">
+      <div class="label">期間</div>
+      <div class="value" id="span">—</div>
+    </div>
+    <div class="substat">
+      <div class="label">1 日あたり</div>
+      <div class="value" id="per-day">—<small>件</small></div>
+    </div>
+    <div class="substat">
+      <div class="label">1 時間あたり</div>
+      <div class="value" id="per-hour">—<small>件</small></div>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="section-head">
+    <div>
+      <h2 id="breakdown-title">内訳</h2>
+      <div class="sub" id="breakdown-sub">1 区間につき 1 リクエストなので、必要なときだけ取得します。</div>
+    </div>
+    <div class="chart-actions">
+      <button id="load-breakdown">内訳を取得</button>
+      <button id="toggle-table" hidden>表で見る</button>
+    </div>
+  </div>
+  <p class="progress" id="breakdown-progress" hidden><span class="spinner"></span><span id="progress-text"></span></p>
+  <div id="chart-area" hidden>
+    <div class="chart">
+      <div class="gridlines" id="gridlines"></div>
+      <div class="bars" id="bars"></div>
+      <div class="xaxis" id="xaxis"></div>
+    </div>
+  </div>
+  <div class="tablewrap" id="table-area" hidden>
+    <table>
+      <thead><tr><th>区間（JST）</th><th class="num">件数</th></tr></thead>
+      <tbody id="table-body"></tbody>
+    </table>
+  </div>
+  <p class="msg" id="breakdown-msg" hidden></p>
+</section>
+
+<footer id="footer"></footer>
+</div>
+
+<div class="tooltip" id="tooltip" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+
+/* JST は夏時間が無いので固定オフセットで正確に扱える。 */
+const JST_OFFSET_MS = 9 * 3600 * 1000;
+const DAY_MS = 86400000;
+const MAX_BUCKETS = 62;          // 1 区間 = 1 リクエスト。取りすぎない上限。
+const BREAKDOWN_CONCURRENCY = 4;
+
+const $ = (id) => document.getElementById(id);
+const els = {
+  fromDate: $("from-date"), fromH: $("from-h"), fromM: $("from-m"),
+  toDate: $("to-date"), toH: $("to-h"), toM: $("to-m"),
+  run: $("run"), now: $("now"), filterMsg: $("filter-msg"), subtitle: $("subtitle"),
+  heroSpinner: $("hero-spinner"), total: $("total"), rangeLabel: $("range-label"),
+  substats: $("substats"), span: $("span"), perDay: $("per-day"), perHour: $("per-hour"),
+  loadBreakdown: $("load-breakdown"), toggleTable: $("toggle-table"),
+  breakdownTitle: $("breakdown-title"), breakdownSub: $("breakdown-sub"),
+  breakdownProgress: $("breakdown-progress"), progressText: $("progress-text"),
+  breakdownMsg: $("breakdown-msg"),
+  chartArea: $("chart-area"), gridlines: $("gridlines"), bars: $("bars"), xaxis: $("xaxis"),
+  tableArea: $("table-area"), tableBody: $("table-body"),
+  tooltip: $("tooltip"), footer: $("footer"), saveSale: $("save-sale"),
+};
+
+let config = { campusName: "42Tokyo", saleStart: "" };
+let lastBuckets = null;
+let breakdownRunning = false;
+let countAbort = null;
+
+const nf = new Intl.NumberFormat("ja-JP");
+const jstDateLabel = (ms) => new Date(ms + JST_OFFSET_MS).toISOString().slice(0, 10);
+const jstStamp = (ms) => new Date(ms + JST_OFFSET_MS).toISOString().slice(0, 16).replace("T", " ");
+
+// ── 日付 + 時:分（24 時間表記） ────────────────────────────
+function clampInt(raw, min, max) {
+  const n = Math.trunc(Number(raw));
+  if (!Number.isFinite(n)) return min;
+  return Math.min(max, Math.max(min, n));
+}
+
+/** 24:00 は「その日の終わり」= 翌日 0:00 として扱う。 */
+function readDateTime(which) {
+  const date = els[which + "Date"].value;
+  if (!date) return NaN;
+  const base = Date.parse(`${date}T00:00:00+09:00`);
+  if (!Number.isFinite(base)) return NaN;
+  const hour = clampInt(els[which + "H"].value, 0, 24);
+  const minute = hour === 24 ? 0 : clampInt(els[which + "M"].value, 0, 59);
+  return base + hour * 3600000 + minute * 60000;
+}
+
+function writeDateTime(which, ms) {
+  const jst = new Date(ms + JST_OFFSET_MS);
+  els[which + "Date"].value = jst.toISOString().slice(0, 10);
+  els[which + "H"].value = String(jst.getUTCHours()).padStart(2, "0");
+  els[which + "M"].value = String(jst.getUTCMinutes()).padStart(2, "0");
+}
+
+// 入力欄は min/max で頭打ちにして、回り込ませない（23 の次は 24 で止まり 0 に戻らない）。
+for (const [input, min, max] of [
+  [els.fromH, 0, 24], [els.toH, 0, 24],
+  [els.fromM, 0, 59], [els.toM, 0, 59],
+]) {
+  const clamp = () => { input.value = String(clampInt(input.value, min, max)).padStart(2, "0"); };
+  input.addEventListener("change", clamp);
+  input.addEventListener("blur", clamp);
+}
+// 24 時ちょうどのときは分を 0 に固定する。
+for (const [hour, minute] of [[els.fromH, els.fromM], [els.toH, els.toM]]) {
+  hour.addEventListener("change", () => {
+    if (Number(hour.value) === 24) minute.value = "00";
+    minute.disabled = Number(hour.value) === 24;
+  });
+}
+
+function formatSpan(ms) {
+  const hours = ms / 3600000;
+  if (hours < 48) return `${(Math.round(hours * 10) / 10).toLocaleString("ja-JP")} 時間`;
+  return `${(Math.round((hours / 24) * 10) / 10).toLocaleString("ja-JP")} 日`;
+}
+
+function showMsg(el, text, isError) {
+  el.textContent = text;
+  el.classList.toggle("error", !!isError);
+  el.hidden = !text;
+}
+
+// ── API ────────────────────────────────────────────────────
+async function apiCount(fromMs, toMs, signal) {
+  const url = `/api/count?from=${encodeURIComponent(new Date(fromMs).toISOString())}` +
+              `&to=${encodeURIComponent(new Date(toMs).toISOString())}`;
+  const res = await fetch(url, { signal });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data.total;
+}
+
+// ── 集計（ヒーロー数値） ────────────────────────────────────
+function setBusy(busy) {
+  els.heroSpinner.hidden = !busy;
+  els.total.classList.toggle("stale", busy && !els.total.classList.contains("empty"));
+  els.substats.classList.toggle("stale", busy);
+  els.run.disabled = busy;
+  els.run.innerHTML = busy ? '<span class="spinner"></span>集計中' : "集計";
+}
+
+async function runCount() {
+  const fromMs = readDateTime("from");
+  const toMs = readDateTime("to");
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+    return showMsg(els.filterMsg, "開始と終了の日付を入力してください", true);
+  }
+  if (fromMs >= toMs) {
+    return showMsg(els.filterMsg, "開始は終了より前にしてください", true);
+  }
+  showMsg(els.filterMsg, "");
+  localStorage.setItem("review.from", String(fromMs));
+  localStorage.setItem("review.to", String(toMs));
+
+  // 前の集計が走っていれば捨てる（プリセット連打で古い結果が後から来ないように）
+  countAbort?.abort();
+  const controller = new AbortController();
+  countAbort = controller;
+
+  setBusy(true);
+  els.rangeLabel.textContent = `${jstStamp(fromMs)} 〜 ${jstStamp(toMs)}（JST）`;
+
+  try {
+    const total = await apiCount(fromMs, toMs, controller.signal);
+    const spanMs = toMs - fromMs;
+    els.total.classList.remove("empty");
+    els.total.innerHTML = `${nf.format(total)}<span class="unit">件</span>`;
+    els.span.textContent = formatSpan(spanMs);
+    els.perDay.innerHTML = `${nf.format(Math.round((total / (spanMs / DAY_MS)) * 10) / 10)}<small>件</small>`;
+    els.perHour.innerHTML = `${nf.format(Math.round((total / (spanMs / 3600000)) * 10) / 10)}<small>件</small>`;
+    els.substats.hidden = false;
+    resetBreakdown();
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    els.total.classList.add("empty");
+    els.total.innerHTML = '<span class="placeholder">—</span><span class="unit">件</span>';
+    els.substats.hidden = true;
+    showMsg(els.filterMsg, `取得に失敗しました: ${err.message}`, true);
+  } finally {
+    if (countAbort === controller) {
+      countAbort = null;
+      setBusy(false);
+    }
+  }
+}
+
+// ── 区間分割 ────────────────────────────────────────────────
+/** JST の暦日（長い期間なら 7 日）で区切る。両端は指定時刻で切り落とす。 */
+function makeBuckets(fromMs, toMs) {
+  const days = (toMs - fromMs) / DAY_MS;
+  // 両端が半端な日だと区間が 1 つ増えるので、日割りは MAX_BUCKETS - 1 日まで。
+  const step = days > MAX_BUCKETS - 1 ? 7 : 1;
+  const out = [];
+  let start = fromMs;
+  while (start < toMs && out.length < MAX_BUCKETS) {
+    const jstDayIndex = Math.floor((start + JST_OFFSET_MS) / DAY_MS);
+    const nextBoundary = (jstDayIndex + step) * DAY_MS - JST_OFFSET_MS;
+    const end = Math.min(nextBoundary, toMs);
+    out.push({ start, end, label: jstDateLabel(start), count: null });
+    start = end;
+  }
+  return { buckets: out, step, truncated: start < toMs };
+}
+
+function resetBreakdown() {
+  lastBuckets = null;
+  els.chartArea.hidden = true;
+  els.tableArea.hidden = true;
+  els.toggleTable.hidden = true;
+  els.toggleTable.textContent = "表で見る";
+  els.loadBreakdown.disabled = false;
+  showMsg(els.breakdownMsg, "");
+  els.breakdownProgress.hidden = true;
+}
+
+async function loadBreakdown() {
+  if (breakdownRunning) return;
+  const fromMs = readDateTime("from");
+  const toMs = readDateTime("to");
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs >= toMs) {
+    return showMsg(els.breakdownMsg, "先に期間を指定してください", true);
+  }
+
+  const { buckets, step, truncated } = makeBuckets(fromMs, toMs);
+  lastBuckets = buckets;
+  breakdownRunning = true;
+  els.loadBreakdown.disabled = true;
+  els.loadBreakdown.innerHTML = '<span class="spinner"></span>取得中';
+  els.breakdownTitle.textContent = step === 1 ? "日別の内訳" : "週別の内訳";
+  els.breakdownSub.textContent = `${buckets.length} 区間 × 1 リクエスト`;
+  showMsg(els.breakdownMsg, truncated ? `区間が多すぎるため先頭 ${MAX_BUCKETS} 区間だけ表示しています。` : "");
+  els.chartArea.hidden = false;
+  els.tableArea.hidden = true;
+  els.toggleTable.hidden = false;
+  renderChart();
+
+  let done = 0;
+  let failed = 0;
+  els.breakdownProgress.hidden = false;
+  els.progressText.textContent = `0 / ${buckets.length}`;
+
+  const queue = buckets.slice();
+  await Promise.all(Array.from({ length: BREAKDOWN_CONCURRENCY }, async () => {
+    while (queue.length) {
+      const bucket = queue.shift();
+      try {
+        bucket.count = await apiCount(bucket.start, bucket.end);
+      } catch {
+        bucket.count = 0;
+        bucket.failed = true;
+        failed++;
+      }
+      done++;
+      els.progressText.textContent = `${done} / ${buckets.length}`;
+      renderChart();
+    }
+  }));
+
+  breakdownRunning = false;
+  els.loadBreakdown.disabled = false;
+  els.loadBreakdown.textContent = "内訳を取得";
+  els.breakdownProgress.hidden = true;
+  if (failed) showMsg(els.breakdownMsg, `${failed} 区間の取得に失敗しました。もう一度お試しください。`, true);
+  renderChart();
+  renderTable();
+}
+
+// ── 描画 ────────────────────────────────────────────────────
+function niceCeil(value) {
+  if (value <= 5) return 5;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(value)));
+  for (const m of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) {
+    if (magnitude * m >= value) return magnitude * m;
+  }
+  return magnitude * 10;
+}
+
+function renderChart() {
+  if (!lastBuckets) return;
+  const known = lastBuckets.filter((b) => b.count !== null).map((b) => b.count);
+  const max = niceCeil(Math.max(1, ...known));
+  const peak = known.length ? Math.max(...known) : 0;
+  let peakShown = false;
+
+  els.gridlines.innerHTML = "";
+  for (const ratio of [0, 0.5, 1]) {
+    const line = document.createElement("div");
+    line.className = "gridline";
+    line.style.bottom = `${ratio * 100}%`;
+    const label = document.createElement("span");
+    label.textContent = nf.format(Math.round(max * ratio));
+    line.appendChild(label);
+    els.gridlines.appendChild(line);
+  }
+
+  els.bars.innerHTML = "";
+  els.xaxis.innerHTML = "";
+  const tickEvery = Math.max(1, Math.ceil(lastBuckets.length / 8));
+
+  lastBuckets.forEach((bucket, index) => {
+    const bar = document.createElement("div");
+    bar.className = "bar" + (bucket.count === null ? " pending" : "");
+    const fill = document.createElement("i");
+    fill.style.height = bucket.count === null ? "6%" : `${Math.max((bucket.count / max) * 100, 1)}%`;
+    bar.appendChild(fill);
+
+    // 直接ラベルはピークだけ（全点に数字を置かない）
+    if (bucket.count !== null && bucket.count === peak && peak > 0 && !peakShown) {
+      const tag = document.createElement("span");
+      tag.className = "peak";
+      tag.textContent = nf.format(peak);
+      bar.appendChild(tag);
+      peakShown = true;
+    }
+
+    bar.addEventListener("pointerenter", (event) => showTooltip(event, bucket));
+    bar.addEventListener("pointermove", (event) => showTooltip(event, bucket));
+    bar.addEventListener("pointerleave", hideTooltip);
+    els.bars.appendChild(bar);
+
+    const tick = document.createElement("div");
+    tick.className = "xtick";
+    tick.textContent = index % tickEvery === 0 ? bucket.label.slice(5) : "";
+    els.xaxis.appendChild(tick);
+  });
+}
+
+function showTooltip(event, bucket) {
+  const count = bucket.count === null ? "取得中…" : `${nf.format(bucket.count)} 件`;
+  els.tooltip.innerHTML =
+    `<b>${count}</b><div class="t-date">${jstStamp(bucket.start)} 〜 ${jstStamp(bucket.end)}</div>`;
+  els.tooltip.classList.add("on");
+  const pad = 14;
+  const rect = els.tooltip.getBoundingClientRect();
+  let left = event.clientX + pad;
+  if (left + rect.width > window.innerWidth - 8) left = event.clientX - rect.width - pad;
+  els.tooltip.style.left = `${Math.max(8, left)}px`;
+  els.tooltip.style.top = `${Math.max(8, event.clientY - rect.height - pad)}px`;
+}
+const hideTooltip = () => els.tooltip.classList.remove("on");
+
+function renderTable() {
+  if (!lastBuckets) return;
+  els.tableBody.innerHTML = "";
+  for (const bucket of lastBuckets) {
+    const row = document.createElement("tr");
+    const label = document.createElement("td");
+    label.textContent = `${jstStamp(bucket.start)} 〜 ${jstStamp(bucket.end)}`;
+    const value = document.createElement("td");
+    value.className = "num";
+    value.textContent = bucket.count === null ? "—" : nf.format(bucket.count);
+    row.append(label, value);
+    els.tableBody.appendChild(row);
+  }
+}
+
+// ── プリセット ──────────────────────────────────────────────
+function applyPreset(name) {
+  const now = Date.now();
+  let fromMs;
+  if (name === "sale") {
+    const saved = localStorage.getItem("review.saleStart") || config.saleStart;
+    const parsed = saved ? Date.parse(saved) : NaN;
+    if (!Number.isFinite(parsed)) {
+      return showMsg(els.filterMsg,
+        "セール開始が未設定です。開始欄に日時を入れて「開始をセール開始として保存」を押してください。", true);
+    }
+    fromMs = parsed;
+  } else {
+    // 日数プリセットは JST の 0:00 起点に揃える（先頭に半端な区間ができないように）
+    const todayStart = Math.floor((now + JST_OFFSET_MS) / DAY_MS) * DAY_MS - JST_OFFSET_MS;
+    const days = name === "today" ? 1 : name === "7d" ? 7 : 30;
+    fromMs = todayStart - (days - 1) * DAY_MS;
+  }
+  showMsg(els.filterMsg, "");
+  writeDateTime("from", fromMs);
+  writeDateTime("to", now);
+  runCount();
+}
+
+// ── 起動 ────────────────────────────────────────────────────
+els.run.addEventListener("click", runCount);
+els.now.addEventListener("click", () => writeDateTime("to", Date.now()));
+els.loadBreakdown.addEventListener("click", loadBreakdown);
+els.toggleTable.addEventListener("click", () => {
+  const showTable = els.tableArea.hidden;
+  els.tableArea.hidden = !showTable;
+  els.chartArea.hidden = showTable;
+  els.toggleTable.textContent = showTable ? "グラフで見る" : "表で見る";
+  if (showTable) renderTable();
+});
+els.saveSale.addEventListener("click", () => {
+  const ms = readDateTime("from");
+  if (!Number.isFinite(ms)) return showMsg(els.filterMsg, "開始日時を入力してから押してください", true);
+  localStorage.setItem("review.saleStart", new Date(ms).toISOString());
+  showMsg(els.filterMsg, `セール開始を ${jstStamp(ms)}（JST）として保存しました。`);
+});
+for (const button of document.querySelectorAll("[data-preset]")) {
+  button.addEventListener("click", () => applyPreset(button.dataset.preset));
+}
+for (const input of [els.fromDate, els.fromH, els.fromM, els.toDate, els.toH, els.toM]) {
+  input.addEventListener("keydown", (event) => { if (event.key === "Enter") runCount(); });
+}
+
+(function init() {
+  const savedSale = localStorage.getItem("review.saleStart");
+  const savedFrom = Number(localStorage.getItem("review.from"));
+  const savedTo = Number(localStorage.getItem("review.to"));
+
+  if (Number.isFinite(savedFrom) && savedFrom > 0 && Number.isFinite(savedTo) && savedTo > 0) {
+    writeDateTime("from", savedFrom);
+    writeDateTime("to", savedTo);
+  } else if (savedSale && Number.isFinite(Date.parse(savedSale))) {
+    writeDateTime("from", Date.parse(savedSale));
+    writeDateTime("to", Date.now());
+  } else {
+    writeDateTime("from", Date.now() - 7 * DAY_MS);
+    writeDateTime("to", Date.now());
+  }
+
+  // 設定の取得を待たずに 1 回目の集計を始める（Worker 側はここでトークンを温める）
+  runCount();
+
+  fetch("/api/config")
+    .then((res) => (res.ok ? res.json() : null))
+    .then((loaded) => {
+      if (loaded) config = { ...config, ...loaded };
+      els.subtitle.textContent =
+        `${config.campusName} で完了したレビューを、指定した期間で数えます。時刻はすべて JST です。`;
+      els.footer.innerHTML =
+        `件数は 42 API の <code>/v2/scale_teams</code> を <code>range[filled_at]</code> で絞り、` +
+        `<code>x-total</code> ヘッダから読んでいます（レビューが「完了した」時刻が基準）。<br>` +
+        `キャンパス ID ${config.campusId ?? "-"} / 集計値のみを表示し、個人データは保存していません。`;
+    })
+    .catch(() => { /* 既定値のまま続行 */ });
+})();
+</script>
+</body>
+</html>

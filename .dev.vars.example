@@ -1,0 +1,4 @@
+# `.dev.vars` にコピーして値を入れる（`.dev.vars` は .gitignore 済み・コミットしないこと）
+# 本番へは `wrangler secret put FT_CLIENT_ID` / `wrangler secret put FT_CLIENT_SECRET` で入れる。
+FT_CLIENT_ID="u-s4t2ud-..."
+FT_CLIENT_SECRET="s-s4t2ud-..."

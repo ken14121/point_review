@@ -180,6 +180,52 @@ const POOL_MONTHS = [
   "july", "august", "september", "october", "november", "december",
 ];
 
+/**
+ * intra が見せている期限は "Milestone Ultimate Deadline" で、cursus_users の
+ * blackholed_at とは別の日付（ある学生で intra 2026-11-28 に対し blackholed_at は
+ * 2027-02-21）。その値が API のどのキーに入るかは確かめきれていないので、行を
+ * 再帰的に走査して deadline / milestone を含むキーの日付を拾う。無ければ
+ * blackholed_at に落とし、どちらを使ったかを呼び出し側へ返す。
+ */
+const DEADLINE_HINTS = [
+  /ultimate/i,
+  /deadline/i,
+  /milestone/i,
+];
+
+function collectDates(value, path, out, depth = 0) {
+  if (depth > 4 || value === null || value === undefined) return;
+  if (typeof value === "string") {
+    if (/^\d{4}-\d{2}-\d{2}/.test(value) && Number.isFinite(Date.parse(value))) {
+      out.push({ path: path.join("."), value });
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => collectDates(item, [...path, String(index)], out, depth + 1));
+    return;
+  }
+  if (typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      collectDates(child, [...path, key], out, depth + 1);
+    }
+  }
+}
+
+function findDeadline(row) {
+  const dates = [];
+  collectDates(row, [], dates);
+  for (const hint of DEADLINE_HINTS) {
+    const matches = dates.filter((date) => hint.test(date.path));
+    if (matches.length) {
+      // 同じ強さの候補が複数あるときは、いちばん早い日付を期限として扱う
+      matches.sort((a, b) => Date.parse(a.value) - Date.parse(b.value));
+      return { at: matches[0].value, source: matches[0].path };
+    }
+  }
+  return { at: row.blackholed_at || null, source: row.blackholed_at ? "blackholed_at" : null };
+}
+
 const chunk = (items, size) => {
   const out = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
@@ -217,6 +263,7 @@ async function fetchCohort(env, poolMonth, poolYear) {
   for (const row of rows) {
     const user = row.user || usersById.get(row.user_id);
     const userId = user?.id ?? row.user_id;
+    const deadline = findDeadline(row);
     const member = {
       login: user?.login ?? `#${userId}`,
       level: Number(row.level) || 0,
@@ -224,6 +271,8 @@ async function fetchCohort(env, poolMonth, poolYear) {
       beginAt: row.begin_at || null,
       endAt: row.end_at || null,
       blackholedAt: row.blackholed_at || null,
+      deadlineAt: deadline.at,
+      deadlineSource: deadline.source,
     };
     const previous = byUser.get(userId);
     if (!previous || isCurrentEnrollment(member, previous)) byUser.set(userId, member);
@@ -231,9 +280,18 @@ async function fetchCohort(env, poolMonth, poolYear) {
 
   const members = [...byUser.values()];
   members.sort((a, b) => b.level - a.level || a.login.localeCompare(b.login));
+
+  // 期限をどのキーから取ったかを集計して、画面に出せるようにする
+  const deadlineSources = {};
+  for (const member of members) {
+    const source = member.deadlineSource ?? "なし";
+    deadlineSources[source] = (deadlineSources[source] || 0) + 1;
+  }
+
   return {
     pisciners: pisciners.length,
     members,
+    deadlineSources,
     // 重複があったかどうかを見えるようにしておく（0 でなければ複数登録の人がいる）
     duplicateRows: rows.length - members.length,
   };

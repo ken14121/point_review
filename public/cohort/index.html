@@ -121,7 +121,6 @@ td.rank{color:var(--text-muted);width:2.5em;}
 .tablewrap{max-height:520px;overflow:auto;margin-top:4px;}
 .bh{color:var(--text-muted);}
 td.muted{color:var(--text-muted);}
-td.urgent{color:var(--danger);font-weight:600;}
 .tag{font-size:10.5px;border:1px solid var(--line);border-radius:4px;padding:1px 6px;color:var(--text-muted);}
 
 .msg{font-size:12.5px;color:var(--text-secondary);margin-top:12px;}
@@ -182,7 +181,6 @@ footer code{font-size:11px;background:var(--surface-1);border:1px solid var(--li
     <div class="substat"><div class="label">レベル中央値</div><div class="value" id="median">—</div></div>
     <div class="substat"><div class="label">最高レベル</div><div class="value" id="top">—</div></div>
     <div class="substat"><div class="label">ブラックホール済み</div><div class="value" id="blackholed">—<small>人</small></div></div>
-    <div class="substat"><div class="label" id="soon-label">期限 30 日以内</div><div class="value" id="soon">—<small>人</small></div></div>
   </div>
 </section>
 
@@ -199,7 +197,6 @@ footer code{font-size:11px;background:var(--surface-1);border:1px solid var(--li
 <section class="card" id="list-card" hidden>
   <h2>一覧</h2>
   <div class="sub" id="list-sub"></div>
-  <p class="msg" id="deadline-note" hidden></p>
   <div class="tablewrap">
     <table>
       <thead>
@@ -208,7 +205,7 @@ footer code{font-size:11px;background:var(--surface-1);border:1px solid var(--li
           <th class="sortable" data-sort="login">login</th>
           <th class="sortable num" data-sort="level">レベル</th>
           <th class="sortable" data-sort="beginAt">開始</th>
-          <th class="sortable" data-sort="deadlineAt" id="deadline-header">期限</th>
+          <th class="sortable" data-sort="blackholedAt">状態</th>
         </tr>
       </thead>
       <tbody id="tbody"></tbody>
@@ -228,11 +225,10 @@ const els = {
   month: $("month"), year: $("year"), includeBh: $("include-bh"), load: $("load"), msg: $("msg"),
   spinner: $("spinner"), count: $("count"), cohortLabel: $("cohort-label"), substats: $("substats"),
   pisciners: $("pisciners"), median: $("median"), top: $("top"),
-  blackholed: $("blackholed"), soon: $("soon"),
+  blackholed: $("blackholed"),
   chartCard: $("chart-card"), chartSub: $("chart-sub"),
   gridlines: $("gridlines"), bars: $("bars"), xaxis: $("xaxis"),
   listCard: $("list-card"), listSub: $("list-sub"), tbody: $("tbody"),
-  deadlineNote: $("deadline-note"), deadlineHeader: $("deadline-header"), soonLabel: $("soon-label"),
   tooltip: $("tooltip"), footer: $("footer"), subtitle: $("subtitle"),
 };
 
@@ -249,20 +245,18 @@ const DAY_MS = 86400000;
  * 未来の日付はまだ在籍中（その日までに XP を稼ぐ必要がある）という意味で、
  * 過ぎている場合だけブラックホール済み。null は期限なし（common core 修了など）。
  */
-const deadlineOf = (member) => member.deadlineAt ?? member.blackholedAt ?? null;
-
-const isBlackholed = (member) => {
-  const at = deadlineOf(member);
-  return at !== null && Date.parse(at) <= Date.now();
-};
-
-const daysLeft = (member) =>
-  Math.ceil((Date.parse(deadlineOf(member)) - Date.now()) / DAY_MS);
+/**
+ * blackholed_at を過ぎていればブラックホール済み。
+ * 日付そのものは出さない。intra が見せている Milestone Ultimate Deadline は
+ * 42 の公開 API に無く、blackholed_at はそれとは別の（多くの場合もっと遅い）
+ * 日付なので、残り日数として出すと実態とずれる。
+ */
+const isBlackholed = (member) =>
+  member.blackholedAt !== null && Date.parse(member.blackholedAt) <= Date.now();
 
 let allMembers = [];
 let shownMembers = [];
 let duplicateRows = 0;
-let deadlineSources = {};
 let sortKey = "level";
 let sortAsc = false;
 let loadAbort = null;
@@ -299,7 +293,6 @@ async function load() {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     allMembers = data.members || [];
     duplicateRows = data.duplicateRows || 0;
-    deadlineSources = data.deadlineSources || {};
     els.pisciners.innerHTML = `${nf.format(data.pisciners ?? 0)}<small>人</small>`;
     render();
     if (allMembers.length === 0) {
@@ -326,7 +319,6 @@ function render() {
   shownMembers = els.includeBh.checked ? allMembers.slice() : allMembers.filter((m) => !isBlackholed(m));
   const levels = shownMembers.map((m) => m.level).sort((a, b) => a - b);
   const blackholed = allMembers.filter(isBlackholed).length;
-  const soon = allMembers.filter((m) => !isBlackholed(m) && deadlineOf(m) && daysLeft(m) <= 30).length;
 
   els.count.classList.toggle("empty", shownMembers.length === 0);
   els.count.innerHTML = shownMembers.length
@@ -335,10 +327,8 @@ function render() {
   els.median.textContent = levels.length ? fmtLevel(median(levels)) : "—";
   els.top.textContent = levels.length ? fmtLevel(levels[levels.length - 1]) : "—";
   els.blackholed.innerHTML = `${nf.format(blackholed)}<small>人</small>`;
-  els.soon.innerHTML = `${nf.format(soon)}<small>人</small>`;
   els.substats.hidden = false;
 
-  renderDeadlineNote();
   els.chartCard.hidden = shownMembers.length === 0;
   els.listCard.hidden = shownMembers.length === 0;
   if (shownMembers.length === 0) return;
@@ -427,36 +417,6 @@ function renderChart(sortedLevels) {
   });
 }
 
-/**
- * この列が何の日付なのかを明示する。
- * intra のダッシュボードに出る Milestone Ultimate Deadline は 42 の公開 API に
- * 出ていない（cursus_users にも users にもキーが無い）ことを実測で確認済みなので、
- * 既定では blackholed_at を表示している旨をそのまま書く。
- */
-function usingBlackholedAt() {
-  const sources = Object.keys(deadlineSources).filter((key) => key !== "なし");
-  return sources.length === 0 || (sources.length === 1 && sources[0] === "blackholed_at");
-}
-
-function renderDeadlineNote() {
-  const sources = Object.keys(deadlineSources).filter((key) => key !== "なし");
-  const label = usingBlackholedAt() ? "ブラックホール期限" : "マイルストーン期限";
-  els.deadlineHeader.textContent = label;
-  els.soonLabel.textContent = `${label} 30 日以内`;
-
-  if (sources.length === 0) {
-    els.deadlineNote.hidden = true;
-    return;
-  }
-  els.deadlineNote.hidden = false;
-  els.deadlineNote.className = "msg";
-  els.deadlineNote.textContent = usingBlackholedAt()
-    ? "この列は 42 API の cursus_users.blackholed_at です。"
-      + "intra のダッシュボードに出る Milestone Ultimate Deadline はこれとは別の（多くの場合もっと早い）日付で、"
-      + "API では公開されていないため表示できません。"
-    : `この列は cursus_users の ${sources.join(" / ")} から取得しています。`;
-}
-
 function renderTable() {
   const rows = shownMembers.slice().sort((a, b) => {
     const direction = sortAsc ? 1 : -1;
@@ -472,7 +432,6 @@ function renderTable() {
     (duplicateRows > 0
       ? ` 複数の登録を持つ人が ${duplicateRows} 件あったので、現在の登録だけを表示しています。`
       : "");
-  renderDeadlineNote();
   els.tbody.innerHTML = "";
   rows.forEach((member, index) => {
     const tr = document.createElement("tr");
@@ -493,19 +452,13 @@ function renderTable() {
     begin.textContent = member.beginAt ? member.beginAt.slice(0, 10) : "—";
 
     const state = document.createElement("td");
-    const at = deadlineOf(member);
-    if (!at) {
-      state.textContent = "期限なし";
-      state.className = "muted";
-    } else if (isBlackholed(member)) {
+    if (isBlackholed(member)) {
       const tag = document.createElement("span");
       tag.className = "tag";
-      tag.textContent = `到達 ${at.slice(0, 10)}`;
+      tag.textContent = "ブラックホール済み";
       state.appendChild(tag);
     } else {
-      const days = daysLeft(member);
-      state.textContent = `${at.slice(0, 10)} ・ あと ${nf.format(days)} 日`;
-      if (days <= 30) state.className = "urgent";
+      state.textContent = "在籍中";
     }
 
     tr.append(rank, login, level, begin, state);
@@ -519,7 +472,6 @@ for (const th of document.querySelectorAll("th.sortable")) {
   th.addEventListener("click", () => {
     const key = th.dataset.sort;
     if (sortKey === key) sortAsc = !sortAsc;
-    // 日付と login は昇順から（期限は近い順で見たいことが多い）、レベルは降順から
     else { sortKey = key; sortAsc = key !== "level"; }
     if (shownMembers.length) renderTable();
   });
@@ -538,8 +490,8 @@ for (const th of document.querySelectorAll("th.sortable")) {
       els.footer.innerHTML =
         `42 API の <code>/v2/campus/:id/users</code> を <code>pool_month</code> / <code>pool_year</code> で絞り、` +
         `その人たちの <code>/v2/cursus/:id/cursus_users</code> からレベルと blackholed_at を読んでいます。<br>` +
-        `期限の列は未来の日付ならまだ在籍中（その日までに条件を満たす必要がある）という意味です。` +
-        `intra の Milestone Ultimate Deadline は 42 の公開 API に無いため表示できません。<br>` +
+        `「ブラックホール済み」は <code>blackholed_at</code> を過ぎている人です。` +
+        `intra に出る Milestone Ultimate Deadline は 42 の公開 API に無いため、期限の日数は表示していません。<br>` +
         `ピシンを受けたが 42cursus に入らなかった人は「ピシン参加者」にだけ数えられ、一覧には出ません。`;
     })
     .catch(() => {});

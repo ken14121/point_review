@@ -343,9 +343,15 @@ async function handleCohort(request, env) {
   return json({ poolMonth, poolYear, ...cohort, cached: false });
 }
 
+/** デバッグ用の経路はローカル開発のときだけ開ける（本番では 404）。 */
+function isLocalRequest(url) {
+  return url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1";
+}
+
 /**
- * 答え合わせ用。指定した login の cursus_users を 42 API から取って素のまま返す。
- * intra の表示と突き合わせて、ズレがこちらの集計由来か API の値そのものかを切り分ける。
+ * 答え合わせ用。指定した login の cursus_users を 42 API から取り、加工せずそのまま返す。
+ * こちらでフィールドを選ぶと、選んでいない項目（マイルストーンの期限など）を
+ * 見落とすので、生のまま出す。
  */
 async function handleDebugUser(request, env) {
   const login = (new URL(request.url).searchParams.get("login") || "").trim();
@@ -355,23 +361,29 @@ async function handleDebugUser(request, env) {
   const url = new URL(`${API_ORIGIN}/v2/users/${encodeURIComponent(login)}/cursus_users`);
   url.searchParams.set("page[size]", "100");
   const rows = await (await fetch42(env, url)).json();
+  const cursusId = Number(env.CURSUS_ID || "21");
+  const target = (Array.isArray(rows) ? rows : []).find((row) => row.cursus_id === cursusId);
   return json({
     login,
-    cursusIdInUse: String(env.CURSUS_ID || "21"),
     now: new Date().toISOString(),
-    rows: (Array.isArray(rows) ? rows : []).map((row) => ({
-      cursusId: row.cursus_id,
-      cursusName: row.cursus?.name ?? null,
-      level: row.level,
-      grade: row.grade,
-      beginAt: row.begin_at,
-      endAt: row.end_at,
-      blackholedAt: row.blackholed_at,
-      daysLeft: row.blackholed_at
-        ? Math.ceil((Date.parse(row.blackholed_at) - Date.now()) / 86400000)
-        : null,
-    })),
+    cursusIdInUse: cursusId,
+    // 42cursus の行にどんなキーがあるか（マイルストーン関連を探すため）
+    keysOnTargetRow: target ? Object.keys(target).sort() : [],
+    rows,
   });
+}
+
+/**
+ * 42 API の任意の GET を素通しする（ローカル限定）。
+ * マイルストーンの期限がどのエンドポイントにあるかを探すために使う。
+ */
+async function handleDebugRaw(request, env) {
+  const path = new URL(request.url).searchParams.get("path") || "";
+  if (!path.startsWith("/v2/") || path.includes("..")) {
+    throw new HttpError(400, "path は /v2/ で始まるものを指定してください");
+  }
+  const url = new URL(API_ORIGIN + path);
+  return json({ path, body: await (await fetch42(env, url)).json() });
 }
 
 function handleConfig(env, ctx) {
@@ -403,6 +415,9 @@ export default {
     if (request.method !== "GET") {
       return json({ error: "GET のみ対応しています" }, 405);
     }
+    if (url.pathname.startsWith("/api/debug/") && !isLocalRequest(url)) {
+      return json({ error: "not found" }, 404);
+    }
 
     try {
       switch (url.pathname) {
@@ -414,6 +429,8 @@ export default {
           return await handleCohort(request, env);
         case "/api/debug/user":
           return await handleDebugUser(request, env);
+        case "/api/debug/raw":
+          return await handleDebugRaw(request, env);
         case "/api/health":
           return json({ ok: true });
         default:

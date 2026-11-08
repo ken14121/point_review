@@ -182,7 +182,7 @@ footer code{font-size:11px;background:var(--surface-1);border:1px solid var(--li
     <div class="substat"><div class="label">レベル中央値</div><div class="value" id="median">—</div></div>
     <div class="substat"><div class="label">最高レベル</div><div class="value" id="top">—</div></div>
     <div class="substat"><div class="label">ブラックホール済み</div><div class="value" id="blackholed">—<small>人</small></div></div>
-    <div class="substat"><div class="label">期限 30 日以内</div><div class="value" id="soon">—<small>人</small></div></div>
+    <div class="substat"><div class="label" id="soon-label">期限 30 日以内</div><div class="value" id="soon">—<small>人</small></div></div>
   </div>
 </section>
 
@@ -208,7 +208,7 @@ footer code{font-size:11px;background:var(--surface-1);border:1px solid var(--li
           <th class="sortable" data-sort="login">login</th>
           <th class="sortable num" data-sort="level">レベル</th>
           <th class="sortable" data-sort="beginAt">開始</th>
-          <th class="sortable" data-sort="deadlineAt">期限</th>
+          <th class="sortable" data-sort="deadlineAt" id="deadline-header">期限</th>
         </tr>
       </thead>
       <tbody id="tbody"></tbody>
@@ -232,7 +232,7 @@ const els = {
   chartCard: $("chart-card"), chartSub: $("chart-sub"),
   gridlines: $("gridlines"), bars: $("bars"), xaxis: $("xaxis"),
   listCard: $("list-card"), listSub: $("list-sub"), tbody: $("tbody"),
-  deadlineNote: $("deadline-note"),
+  deadlineNote: $("deadline-note"), deadlineHeader: $("deadline-header"), soonLabel: $("soon-label"),
   tooltip: $("tooltip"), footer: $("footer"), subtitle: $("subtitle"),
 };
 
@@ -338,6 +338,7 @@ function render() {
   els.soon.innerHTML = `${nf.format(soon)}<small>人</small>`;
   els.substats.hidden = false;
 
+  renderDeadlineNote();
   els.chartCard.hidden = shownMembers.length === 0;
   els.listCard.hidden = shownMembers.length === 0;
   if (shownMembers.length === 0) return;
@@ -426,21 +427,34 @@ function renderChart(sortedLevels) {
   });
 }
 
-/** 期限をどのキーから取ったかを明示する。blackholed_at のままなら intra とずれる旨も出す。 */
+/**
+ * この列が何の日付なのかを明示する。
+ * intra のダッシュボードに出る Milestone Ultimate Deadline は 42 の公開 API に
+ * 出ていない（cursus_users にも users にもキーが無い）ことを実測で確認済みなので、
+ * 既定では blackholed_at を表示している旨をそのまま書く。
+ */
+function usingBlackholedAt() {
+  const sources = Object.keys(deadlineSources).filter((key) => key !== "なし");
+  return sources.length === 0 || (sources.length === 1 && sources[0] === "blackholed_at");
+}
+
 function renderDeadlineNote() {
   const sources = Object.keys(deadlineSources).filter((key) => key !== "なし");
+  const label = usingBlackholedAt() ? "ブラックホール期限" : "マイルストーン期限";
+  els.deadlineHeader.textContent = label;
+  els.soonLabel.textContent = `${label} 30 日以内`;
+
   if (sources.length === 0) {
-    els.deadlineNote.textContent = "";
     els.deadlineNote.hidden = true;
     return;
   }
-  const onlyBlackholed = sources.length === 1 && sources[0] === "blackholed_at";
   els.deadlineNote.hidden = false;
-  els.deadlineNote.className = onlyBlackholed ? "msg error" : "msg";
-  els.deadlineNote.textContent = onlyBlackholed
-    ? "「期限」は cursus_users の blackholed_at です。API にマイルストーン期限が見つからなかったため、"
-      + "intra の Milestone Ultimate Deadline とは異なる場合があります。"
-    : `「期限」は cursus_users の ${sources.join(" / ")} から取得しています。`;
+  els.deadlineNote.className = "msg";
+  els.deadlineNote.textContent = usingBlackholedAt()
+    ? "この列は 42 API の cursus_users.blackholed_at です。"
+      + "intra のダッシュボードに出る Milestone Ultimate Deadline はこれとは別の（多くの場合もっと早い）日付で、"
+      + "API では公開されていないため表示できません。"
+    : `この列は cursus_users の ${sources.join(" / ")} から取得しています。`;
 }
 
 function renderTable() {
@@ -524,8 +538,8 @@ for (const th of document.querySelectorAll("th.sortable")) {
       els.footer.innerHTML =
         `42 API の <code>/v2/campus/:id/users</code> を <code>pool_month</code> / <code>pool_year</code> で絞り、` +
         `その人たちの <code>/v2/cursus/:id/cursus_users</code> からレベルと blackholed_at を読んでいます。<br>` +
-        `「期限」は intra の Milestone Ultimate Deadline にあたる日付を探して表示します。` +
-        `未来の日付はまだ在籍中（その日までに条件を満たす必要がある）という意味です。<br>` +
+        `期限の列は未来の日付ならまだ在籍中（その日までに条件を満たす必要がある）という意味です。` +
+        `intra の Milestone Ultimate Deadline は 42 の公開 API に無いため表示できません。<br>` +
         `ピシンを受けたが 42cursus に入らなかった人は「ピシン参加者」にだけ数えられ、一覧には出ません。`;
     })
     .catch(() => {});

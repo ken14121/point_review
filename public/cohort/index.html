@@ -120,6 +120,8 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;}
 td.rank{color:var(--text-muted);width:2.5em;}
 .tablewrap{max-height:520px;overflow:auto;margin-top:4px;}
 .bh{color:var(--text-muted);}
+td.muted{color:var(--text-muted);}
+td.urgent{color:var(--danger);font-weight:600;}
 .tag{font-size:10.5px;border:1px solid var(--line);border-radius:4px;padding:1px 6px;color:var(--text-muted);}
 
 .msg{font-size:12.5px;color:var(--text-secondary);margin-top:12px;}
@@ -180,6 +182,7 @@ footer code{font-size:11px;background:var(--surface-1);border:1px solid var(--li
     <div class="substat"><div class="label">レベル中央値</div><div class="value" id="median">—</div></div>
     <div class="substat"><div class="label">最高レベル</div><div class="value" id="top">—</div></div>
     <div class="substat"><div class="label">ブラックホール済み</div><div class="value" id="blackholed">—<small>人</small></div></div>
+    <div class="substat"><div class="label">期限 30 日以内</div><div class="value" id="soon">—<small>人</small></div></div>
   </div>
 </section>
 
@@ -204,7 +207,7 @@ footer code{font-size:11px;background:var(--surface-1);border:1px solid var(--li
           <th class="sortable" data-sort="login">login</th>
           <th class="sortable num" data-sort="level">レベル</th>
           <th class="sortable" data-sort="beginAt">開始</th>
-          <th class="sortable" data-sort="blackholedAt">状態</th>
+          <th class="sortable" data-sort="blackholedAt">ブラックホール</th>
         </tr>
       </thead>
       <tbody id="tbody"></tbody>
@@ -223,7 +226,8 @@ const $ = (id) => document.getElementById(id);
 const els = {
   month: $("month"), year: $("year"), includeBh: $("include-bh"), load: $("load"), msg: $("msg"),
   spinner: $("spinner"), count: $("count"), cohortLabel: $("cohort-label"), substats: $("substats"),
-  pisciners: $("pisciners"), median: $("median"), top: $("top"), blackholed: $("blackholed"),
+  pisciners: $("pisciners"), median: $("median"), top: $("top"),
+  blackholed: $("blackholed"), soon: $("soon"),
   chartCard: $("chart-card"), chartSub: $("chart-sub"),
   gridlines: $("gridlines"), bars: $("bars"), xaxis: $("xaxis"),
   listCard: $("list-card"), listSub: $("list-sub"), tbody: $("tbody"),
@@ -236,6 +240,18 @@ const MONTH_JA = {
 };
 const nf = new Intl.NumberFormat("ja-JP");
 const fmtLevel = (n) => n.toFixed(2);
+const DAY_MS = 86400000;
+
+/**
+ * 42 の blackholed_at は「落ちた日」ではなく「期限の日」。
+ * 未来の日付はまだ在籍中（その日までに XP を稼ぐ必要がある）という意味で、
+ * 過ぎている場合だけブラックホール済み。null は期限なし（common core 修了など）。
+ */
+const isBlackholed = (member) =>
+  member.blackholedAt !== null && Date.parse(member.blackholedAt) <= Date.now();
+
+const daysLeft = (member) =>
+  Math.ceil((Date.parse(member.blackholedAt) - Date.now()) / DAY_MS);
 
 let allMembers = [];
 let shownMembers = [];
@@ -297,9 +313,10 @@ async function load() {
 }
 
 function render() {
-  shownMembers = els.includeBh.checked ? allMembers.slice() : allMembers.filter((m) => !m.blackholedAt);
+  shownMembers = els.includeBh.checked ? allMembers.slice() : allMembers.filter((m) => !isBlackholed(m));
   const levels = shownMembers.map((m) => m.level).sort((a, b) => a - b);
-  const blackholed = allMembers.filter((m) => m.blackholedAt).length;
+  const blackholed = allMembers.filter(isBlackholed).length;
+  const soon = allMembers.filter((m) => !isBlackholed(m) && m.blackholedAt && daysLeft(m) <= 30).length;
 
   els.count.classList.toggle("empty", shownMembers.length === 0);
   els.count.innerHTML = shownMembers.length
@@ -308,6 +325,7 @@ function render() {
   els.median.textContent = levels.length ? fmtLevel(median(levels)) : "—";
   els.top.textContent = levels.length ? fmtLevel(levels[levels.length - 1]) : "—";
   els.blackholed.innerHTML = `${nf.format(blackholed)}<small>人</small>`;
+  els.soon.innerHTML = `${nf.format(soon)}<small>人</small>`;
   els.substats.hidden = false;
 
   els.chartCard.hidden = shownMembers.length === 0;
@@ -413,7 +431,7 @@ function renderTable() {
   els.tbody.innerHTML = "";
   rows.forEach((member, index) => {
     const tr = document.createElement("tr");
-    if (member.blackholedAt) tr.className = "bh";
+    if (isBlackholed(member)) tr.className = "bh";
 
     const rank = document.createElement("td");
     rank.className = "rank";
@@ -430,13 +448,18 @@ function renderTable() {
     begin.textContent = member.beginAt ? member.beginAt.slice(0, 10) : "—";
 
     const state = document.createElement("td");
-    if (member.blackholedAt) {
+    if (!member.blackholedAt) {
+      state.textContent = "期限なし";
+      state.className = "muted";
+    } else if (isBlackholed(member)) {
       const tag = document.createElement("span");
       tag.className = "tag";
-      tag.textContent = `BH ${member.blackholedAt.slice(0, 10)}`;
+      tag.textContent = `到達 ${member.blackholedAt.slice(0, 10)}`;
       state.appendChild(tag);
     } else {
-      state.textContent = "在籍中";
+      const days = daysLeft(member);
+      state.textContent = `${member.blackholedAt.slice(0, 10)} ・ あと ${nf.format(days)} 日`;
+      if (days <= 30) state.className = "urgent";
     }
 
     tr.append(rank, login, level, begin, state);
@@ -468,6 +491,8 @@ for (const th of document.querySelectorAll("th.sortable")) {
       els.footer.innerHTML =
         `42 API の <code>/v2/campus/:id/users</code> を <code>pool_month</code> / <code>pool_year</code> で絞り、` +
         `その人たちの <code>/v2/cursus/:id/cursus_users</code> からレベルと blackholed_at を読んでいます。<br>` +
+        `<code>blackholed_at</code> は「落ちた日」ではなく<strong>期限の日</strong>なので、` +
+        `未来の日付はまだ在籍中（その日までに XP が要る）という意味です。<br>` +
         `ピシンを受けたが 42cursus に入らなかった人は「ピシン参加者」にだけ数えられ、一覧には出ません。`;
     })
     .catch(() => {});

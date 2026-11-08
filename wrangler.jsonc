@@ -10,6 +10,8 @@
     "CAMPUS_ID": "26",
     "CAMPUS_NAME": "42Tokyo",
     "CAMPUS_TZ": "Asia/Tokyo",
+    // 42cursus。/v2/cursus?page[size]=100 で確認できる。
+    "CURSUS_ID": "21",
     // セール開始の既定値。空ならブラウザ側で保存した値を使う。例: "2026-08-25T18:00:00+09:00"
     "SALE_START": ""
   },

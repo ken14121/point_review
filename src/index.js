@@ -68,6 +68,18 @@ async function limited(task) {
   return task();
 }
 
+/**
+ * 接続自体が失敗したとき（DNS が引けない、接続が切られた等）に読めるエラーへ変える。
+ * これを挟まないと workerd の内部エラーがそのまま出て "internal error; reference = ..." になる。
+ */
+async function reachable(task) {
+  try {
+    return await task();
+  } catch (err) {
+    throw new HttpError(502, `42 API に接続できませんでした（${err?.message || "ネットワークエラー"}）`);
+  }
+}
+
 async function getToken(env) {
   if (!env.FT_CLIENT_ID || !env.FT_CLIENT_SECRET) {
     throw new HttpError(500, "FT_CLIENT_ID / FT_CLIENT_SECRET が設定されていません");
@@ -82,11 +94,13 @@ async function getToken(env) {
       client_secret: env.FT_CLIENT_SECRET,
     });
     const res = await limited(() =>
-      fetch(TOKEN_URL, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body,
-      }),
+      reachable(() =>
+        fetch(TOKEN_URL, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body,
+        }),
+      ),
     );
     if (!res.ok) {
       throw new HttpError(502, `42 のトークン取得に失敗しました (HTTP ${res.status})`);
@@ -108,32 +122,105 @@ async function getToken(env) {
   return pending;
 }
 
-/** 期間内に filled_at が入った scale_teams の件数を x-total から読む。 */
-async function fetchTotal(env, fromISO, toISO, allowRetry = true) {
+/** 42 API への GET。401 のときだけトークンを取り直して 1 回やり直す。 */
+async function fetch42(env, url, allowRetry = true) {
   const token = await getToken(env);
-  const url = new URL(SCALE_TEAMS_URL);
-  url.searchParams.set("filter[campus_id]", String(env.CAMPUS_ID || "26"));
-  url.searchParams.set("range[filled_at]", `${fromISO},${toISO}`);
-  url.searchParams.set("page[size]", "1");
-
-  const res = await limited(() => fetch(url, { headers: { authorization: `Bearer ${token}` } }));
+  const res = await limited(() =>
+    reachable(() => fetch(url, { headers: { authorization: `Bearer ${token}` } })),
+  );
 
   if (res.status === 401 && allowRetry) {
     tokenCache = null;
-    return fetchTotal(env, fromISO, toISO, false);
+    return fetch42(env, url, false);
   }
   if (res.status === 429) {
     throw new HttpError(429, "42 API のレート制限に達しました。少し待ってから再試行してください");
   }
   if (!res.ok) {
-    throw new HttpError(502, `42 API がエラーを返しました (HTTP ${res.status})`);
+    throw new HttpError(502, `42 API がエラーを返しました (HTTP ${res.status}: ${url.pathname})`);
   }
+  return res;
+}
 
+/** x-total を見ながら最後のページまで読む。 */
+async function fetchAllPages(env, baseUrl, { pageSize = 100, maxPages = 30 } = {}) {
+  const rows = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const url = new URL(baseUrl);
+    url.searchParams.set("page[size]", String(pageSize));
+    url.searchParams.set("page[number]", String(page));
+    const res = await fetch42(env, url);
+    const batch = await res.json();
+    if (!Array.isArray(batch)) throw new HttpError(502, "配列が返ってきませんでした");
+    rows.push(...batch);
+    const total = Number(res.headers.get("x-total"));
+    if (batch.length < pageSize) break;
+    if (Number.isFinite(total) && rows.length >= total) break;
+  }
+  return rows;
+}
+
+/** 期間内に filled_at が入った scale_teams の件数を x-total から読む。 */
+async function fetchTotal(env, fromISO, toISO) {
+  const url = new URL(SCALE_TEAMS_URL);
+  url.searchParams.set("filter[campus_id]", String(env.CAMPUS_ID || "26"));
+  url.searchParams.set("range[filled_at]", `${fromISO},${toISO}`);
+  url.searchParams.set("page[size]", "1");
+
+  const res = await fetch42(env, url);
   const total = Number(res.headers.get("x-total"));
   if (!Number.isFinite(total)) {
     throw new HttpError(502, "x-total ヘッダが取得できませんでした");
   }
   return total;
+}
+
+const POOL_MONTHS = [
+  "january", "february", "march", "april", "may", "june",
+  "july", "august", "september", "october", "november", "december",
+];
+
+const chunk = (items, size) => {
+  const out = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+};
+
+/**
+ * 指定したピシン出身者の cursus 進捗を集める。
+ *
+ * cursus_users 側に pool フィルタがあるかは確かめられていないので、確実にある経路だけを使う:
+ *   1. /v2/campus/:id/users を pool_month + pool_year で絞ってピシン出身者を取る
+ *   2. その user_id をまとめて /v2/cursus/:id/cursus_users に渡す（カンマ区切りで複数指定）
+ * 150 人なら 2 + 5 リクエスト程度で済む。
+ */
+async function fetchCohort(env, poolMonth, poolYear) {
+  const campusId = String(env.CAMPUS_ID || "26");
+  const cursusId = String(env.CURSUS_ID || "21");
+
+  const usersUrl = new URL(`${API_ORIGIN}/v2/campus/${campusId}/users`);
+  usersUrl.searchParams.set("filter[pool_month]", poolMonth);
+  usersUrl.searchParams.set("filter[pool_year]", poolYear);
+  const pisciners = await fetchAllPages(env, usersUrl);
+
+  const usersById = new Map(pisciners.map((user) => [user.id, user]));
+  const members = [];
+  for (const ids of chunk([...usersById.keys()], 30)) {
+    const cursusUrl = new URL(`${API_ORIGIN}/v2/cursus/${cursusId}/cursus_users`);
+    cursusUrl.searchParams.set("filter[user_id]", ids.join(","));
+    for (const row of await fetchAllPages(env, cursusUrl, { maxPages: 2 })) {
+      const user = row.user || usersById.get(row.user_id);
+      members.push({
+        login: user?.login ?? `#${row.user_id}`,
+        level: Number(row.level) || 0,
+        grade: row.grade || null,
+        beginAt: row.begin_at || null,
+        blackholedAt: row.blackholed_at || null,
+      });
+    }
+  }
+  members.sort((a, b) => b.level - a.level || a.login.localeCompare(b.login));
+  return { pisciners: pisciners.length, members };
 }
 
 function cacheGet(key) {
@@ -206,6 +293,28 @@ async function handleCount(request, env) {
   return json({ from: fromISO, to: toISO, total, cached: false });
 }
 
+async function handleCohort(request, env) {
+  const url = new URL(request.url);
+  const poolMonth = (url.searchParams.get("pool_month") || "september").toLowerCase();
+  const poolYear = url.searchParams.get("pool_year") || "2025";
+
+  if (!POOL_MONTHS.includes(poolMonth)) {
+    throw new HttpError(400, `pool_month が不正です（${POOL_MONTHS.join(", ")} のいずれか）`);
+  }
+  if (!/^20\d{2}$/.test(poolYear)) {
+    throw new HttpError(400, "pool_year は 4 桁の西暦で指定してください");
+  }
+
+  const key = `cohort|${poolMonth}|${poolYear}`;
+  const cached = cacheGet(key);
+  if (cached !== null) return json({ poolMonth, poolYear, ...cached, cached: true });
+
+  const cohort = await fetchCohort(env, poolMonth, poolYear);
+  // 進捗はそう速く動かないので 10 分持たせる。
+  countCache.set(key, { total: cohort, expiresAt: Date.now() + 600_000 });
+  return json({ poolMonth, poolYear, ...cohort, cached: false });
+}
+
 function handleConfig(env, ctx) {
   // 最初の集計がトークン取得を待たなくて済むよう、ここで裏で温めておく。
   if (!tokenCache && env.FT_CLIENT_ID && env.FT_CLIENT_SECRET) {
@@ -242,6 +351,8 @@ export default {
           return handleConfig(env, ctx);
         case "/api/count":
           return await handleCount(request, env);
+        case "/api/cohort":
+          return await handleCohort(request, env);
         case "/api/health":
           return json({ ok: true });
         default:

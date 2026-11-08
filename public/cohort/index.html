@@ -255,6 +255,7 @@ const daysLeft = (member) =>
 
 let allMembers = [];
 let shownMembers = [];
+let duplicateRows = 0;
 let sortKey = "level";
 let sortAsc = false;
 let loadAbort = null;
@@ -290,6 +291,7 @@ async function load() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     allMembers = data.members || [];
+    duplicateRows = data.duplicateRows || 0;
     els.pisciners.innerHTML = `${nf.format(data.pisciners ?? 0)}<small>人</small>`;
     render();
     if (allMembers.length === 0) {
@@ -427,7 +429,10 @@ function renderTable() {
     return (typeof x === "number" ? x - y : String(x).localeCompare(String(y))) * direction;
   });
 
-  els.listSub.textContent = `${rows.length} 人 / レベル順などで並べ替えできます。`;
+  els.listSub.textContent = `${rows.length} 人 / 列ヘッダをクリックで並べ替え。` +
+    (duplicateRows > 0
+      ? ` 複数の登録を持つ人が ${duplicateRows} 件あったので、現在の登録だけを表示しています。`
+      : "");
   els.tbody.innerHTML = "";
   rows.forEach((member, index) => {
     const tr = document.createElement("tr");

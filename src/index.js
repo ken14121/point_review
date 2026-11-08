@@ -204,23 +204,51 @@ async function fetchCohort(env, poolMonth, poolYear) {
   const pisciners = await fetchAllPages(env, usersUrl);
 
   const usersById = new Map(pisciners.map((user) => [user.id, user]));
-  const members = [];
+  const rows = [];
   for (const ids of chunk([...usersById.keys()], 30)) {
     const cursusUrl = new URL(`${API_ORIGIN}/v2/cursus/${cursusId}/cursus_users`);
     cursusUrl.searchParams.set("filter[user_id]", ids.join(","));
-    for (const row of await fetchAllPages(env, cursusUrl, { maxPages: 2 })) {
-      const user = row.user || usersById.get(row.user_id);
-      members.push({
-        login: user?.login ?? `#${row.user_id}`,
-        level: Number(row.level) || 0,
-        grade: row.grade || null,
-        beginAt: row.begin_at || null,
-        blackholedAt: row.blackholed_at || null,
-      });
-    }
+    rows.push(...(await fetchAllPages(env, cursusUrl, { maxPages: 2 })));
   }
+
+  // 同じ人が cursus_users を複数持つことがある（再登録・キャンパス移動など）。
+  // 古いほうを採ると期限やレベルが実際とずれるので、1 人 1 行に絞る。
+  const byUser = new Map();
+  for (const row of rows) {
+    const user = row.user || usersById.get(row.user_id);
+    const userId = user?.id ?? row.user_id;
+    const member = {
+      login: user?.login ?? `#${userId}`,
+      level: Number(row.level) || 0,
+      grade: row.grade || null,
+      beginAt: row.begin_at || null,
+      endAt: row.end_at || null,
+      blackholedAt: row.blackholed_at || null,
+    };
+    const previous = byUser.get(userId);
+    if (!previous || isCurrentEnrollment(member, previous)) byUser.set(userId, member);
+  }
+
+  const members = [...byUser.values()];
   members.sort((a, b) => b.level - a.level || a.login.localeCompare(b.login));
-  return { pisciners: pisciners.length, members };
+  return {
+    pisciners: pisciners.length,
+    members,
+    // 重複があったかどうかを見えるようにしておく（0 でなければ複数登録の人がいる）
+    duplicateRows: rows.length - members.length,
+  };
+}
+
+/** 同じ人の 2 行のうち、今の在籍を表しているほうを選ぶ。 */
+function isCurrentEnrollment(candidate, previous) {
+  // 終了していない登録が最優先
+  if (!candidate.endAt !== !previous.endAt) return !candidate.endAt;
+  // 次に、開始が新しいほう
+  const candidateBegin = Date.parse(candidate.beginAt ?? "") || 0;
+  const previousBegin = Date.parse(previous.beginAt ?? "") || 0;
+  if (candidateBegin !== previousBegin) return candidateBegin > previousBegin;
+  // 最後にレベルが高いほう
+  return candidate.level > previous.level;
 }
 
 function cacheGet(key) {
@@ -315,6 +343,37 @@ async function handleCohort(request, env) {
   return json({ poolMonth, poolYear, ...cohort, cached: false });
 }
 
+/**
+ * 答え合わせ用。指定した login の cursus_users を 42 API から取って素のまま返す。
+ * intra の表示と突き合わせて、ズレがこちらの集計由来か API の値そのものかを切り分ける。
+ */
+async function handleDebugUser(request, env) {
+  const login = (new URL(request.url).searchParams.get("login") || "").trim();
+  if (!/^[a-z0-9_-]{2,32}$/i.test(login)) {
+    throw new HttpError(400, "login を指定してください（英数字・ハイフン・アンダースコア）");
+  }
+  const url = new URL(`${API_ORIGIN}/v2/users/${encodeURIComponent(login)}/cursus_users`);
+  url.searchParams.set("page[size]", "100");
+  const rows = await (await fetch42(env, url)).json();
+  return json({
+    login,
+    cursusIdInUse: String(env.CURSUS_ID || "21"),
+    now: new Date().toISOString(),
+    rows: (Array.isArray(rows) ? rows : []).map((row) => ({
+      cursusId: row.cursus_id,
+      cursusName: row.cursus?.name ?? null,
+      level: row.level,
+      grade: row.grade,
+      beginAt: row.begin_at,
+      endAt: row.end_at,
+      blackholedAt: row.blackholed_at,
+      daysLeft: row.blackholed_at
+        ? Math.ceil((Date.parse(row.blackholed_at) - Date.now()) / 86400000)
+        : null,
+    })),
+  });
+}
+
 function handleConfig(env, ctx) {
   // 最初の集計がトークン取得を待たなくて済むよう、ここで裏で温めておく。
   if (!tokenCache && env.FT_CLIENT_ID && env.FT_CLIENT_SECRET) {
@@ -353,6 +412,8 @@ export default {
           return await handleCount(request, env);
         case "/api/cohort":
           return await handleCohort(request, env);
+        case "/api/debug/user":
+          return await handleDebugUser(request, env);
         case "/api/health":
           return json({ ok: true });
         default:

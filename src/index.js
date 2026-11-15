@@ -194,15 +194,18 @@ const chunk = (items, size) => {
  *   2. その user_id をまとめて /v2/cursus/:id/cursus_users に渡す（カンマ区切りで複数指定）
  * 150 人なら 2 + 5 リクエスト程度で済む。
  */
-async function fetchCohort(env, poolMonth, poolYear) {
+/** 指定したピシン（月・年）の出身者を campus の users から取る。 */
+async function fetchPisciners(env, poolMonth, poolYear) {
   const campusId = String(env.CAMPUS_ID || "26");
-  const cursusId = String(env.CURSUS_ID || "21");
-
   const usersUrl = new URL(`${API_ORIGIN}/v2/campus/${campusId}/users`);
   usersUrl.searchParams.set("filter[pool_month]", poolMonth);
   usersUrl.searchParams.set("filter[pool_year]", poolYear);
-  const pisciners = await fetchAllPages(env, usersUrl);
+  return fetchAllPages(env, usersUrl);
+}
 
+async function fetchCohort(env, poolMonth, poolYear) {
+  const cursusId = String(env.CURSUS_ID || "21");
+  const pisciners = await fetchPisciners(env, poolMonth, poolYear);
   const usersById = new Map(pisciners.map((user) => [user.id, user]));
   const rows = [];
   for (const ids of chunk([...usersById.keys()], 30)) {
@@ -250,6 +253,84 @@ function isCurrentEnrollment(candidate, previous) {
   if (candidateBegin !== previousBegin) return candidateBegin > previousBegin;
   // 最後にレベルが高いほう
   return candidate.level > previous.level;
+}
+
+/**
+ * ピシンの cursus にある試験プロジェクトを拾う。
+ * 名前やスラッグに exam を含むものを試験とみなし、00 / 01 / 02 / Final の順に並べる。
+ */
+async function fetchExamProjects(env) {
+  const cursusId = String(env.PISCINE_CURSUS_ID || "9");
+  const url = new URL(`${API_ORIGIN}/v2/cursus/${cursusId}/projects`);
+  const projects = await fetchAllPages(env, url, { maxPages: 5 });
+  const exams = projects
+    .filter((project) => /exam/i.test(`${project.name || ""} ${project.slug || ""}`))
+    .map((project) => ({ id: project.id, name: project.name, slug: project.slug }));
+  exams.sort((a, b) => examOrder(a) - examOrder(b) || a.name.localeCompare(b.name));
+  return exams;
+}
+
+/** Final を最後に、それ以外は名前の中の番号順に。 */
+function examOrder(exam) {
+  const label = `${exam.name || ""} ${exam.slug || ""}`;
+  if (/final/i.test(label)) return 99;
+  const number = label.match(/(\d+)/);
+  return number ? Number(number[1]) : 50;
+}
+
+/** 既定で選ぶ試験。Final があればそれ、無ければ最後のもの。 */
+function defaultExam(exams) {
+  return exams.find((exam) => /final/i.test(`${exam.name} ${exam.slug}`)) ?? exams[exams.length - 1] ?? null;
+}
+
+/**
+ * 指定ピシンの出身者について、ある試験の結果を集める。
+ * cursus_users と同じく、user_id をまとめて projects_users に渡す。
+ */
+async function fetchExamResults(env, poolMonth, poolYear, projectId) {
+  const pisciners = await fetchPisciners(env, poolMonth, poolYear);
+  const usersById = new Map(pisciners.map((user) => [user.id, user]));
+
+  const rows = [];
+  for (const ids of chunk([...usersById.keys()], 30)) {
+    const url = new URL(`${API_ORIGIN}/v2/projects/${projectId}/projects_users`);
+    url.searchParams.set("filter[user_id]", ids.join(","));
+    rows.push(...(await fetchAllPages(env, url, { maxPages: 3 })));
+  }
+
+  // 再受験があると同じ人の行が複数来るので、いちばん良い回を 1 つ残す。
+  const byUser = new Map();
+  for (const row of rows) {
+    const user = row.user || (row.user_id ? usersById.get(row.user_id) : null);
+    const userId = user?.id ?? row.user_id;
+    const attempt = {
+      login: user?.login ?? `#${userId}`,
+      mark: row.final_mark === null || row.final_mark === undefined ? null : Number(row.final_mark),
+      validated: row["validated?"] ?? null,
+      status: row.status || null,
+      markedAt: row.marked_at || null,
+      occurrence: row.occurrence ?? null,
+    };
+    const previous = byUser.get(userId);
+    if (!previous || isBetterAttempt(attempt, previous)) byUser.set(userId, attempt);
+  }
+
+  const attempts = [...byUser.values()];
+  attempts.sort((a, b) => (b.mark ?? -1) - (a.mark ?? -1) || a.login.localeCompare(b.login));
+  return {
+    pisciners: pisciners.length,
+    attempts,
+    duplicateRows: rows.length - attempts.length,
+  };
+}
+
+/** 同じ人の 2 回ぶんのうち、良いほう（合格 > 高得点 > 新しい採点）を選ぶ。 */
+function isBetterAttempt(candidate, previous) {
+  if (candidate.validated !== previous.validated) return candidate.validated === true;
+  const candidateMark = candidate.mark ?? -1;
+  const previousMark = previous.mark ?? -1;
+  if (candidateMark !== previousMark) return candidateMark > previousMark;
+  return (Date.parse(candidate.markedAt ?? "") || 0) > (Date.parse(previous.markedAt ?? "") || 0);
 }
 
 function cacheGet(key) {
@@ -344,6 +425,61 @@ async function handleCohort(request, env) {
   return json({ poolMonth, poolYear, ...cohort, cached: false });
 }
 
+async function handleExamProjects(env) {
+  const cached = cacheGet("examProjects");
+  if (cached !== null) return json({ ...cached, cached: true });
+
+  const exams = await fetchExamProjects(env);
+  const payload = { exams, defaultExamId: defaultExam(exams)?.id ?? null };
+  // プロジェクト一覧はまず変わらないので長めに持たせる。
+  countCache.set("examProjects", { total: payload, expiresAt: Date.now() + 12 * 3600_000 });
+  return json({ ...payload, cached: false });
+}
+
+async function handleExam(request, env) {
+  const url = new URL(request.url);
+  const poolMonth = (url.searchParams.get("pool_month") || "september").toLowerCase();
+  const poolYear = url.searchParams.get("pool_year") || "2025";
+  const projectIdParam = url.searchParams.get("project_id");
+
+  if (!POOL_MONTHS.includes(poolMonth)) {
+    throw new HttpError(400, `pool_month が不正です（${POOL_MONTHS.join(", ")} のいずれか）`);
+  }
+  if (!/^20\d{2}$/.test(poolYear)) {
+    throw new HttpError(400, "pool_year は 4 桁の西暦で指定してください");
+  }
+
+  let projectId = projectIdParam;
+  let projectName = null;
+  if (projectId && !/^\d{1,7}$/.test(projectId)) {
+    throw new HttpError(400, "project_id は数値で指定してください");
+  }
+  const exams = await fetchExamProjects(env);
+  if (!projectId) {
+    const fallback = defaultExam(exams);
+    if (!fallback) {
+      throw new HttpError(
+        502,
+        `ピシンの cursus（id ${env.PISCINE_CURSUS_ID || "9"}）に exam を含むプロジェクトが見つかりませんでした`,
+      );
+    }
+    projectId = String(fallback.id);
+    projectName = fallback.name;
+  } else {
+    projectName = exams.find((exam) => String(exam.id) === projectId)?.name ?? null;
+  }
+
+  const key = `exam|${poolMonth}|${poolYear}|${projectId}`;
+  const cached = cacheGet(key);
+  if (cached !== null) {
+    return json({ poolMonth, poolYear, projectId, projectName, ...cached, cached: true });
+  }
+
+  const results = await fetchExamResults(env, poolMonth, poolYear, projectId);
+  countCache.set(key, { total: results, expiresAt: Date.now() + 600_000 });
+  return json({ poolMonth, poolYear, projectId, projectName, ...results, cached: false });
+}
+
 /** デバッグ用の経路はローカル開発のときだけ開ける（本番では 404）。 */
 function isLocalRequest(url) {
   return url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1";
@@ -428,6 +564,10 @@ export default {
           return await handleCount(request, env);
         case "/api/cohort":
           return await handleCohort(request, env);
+        case "/api/exam/projects":
+          return await handleExamProjects(env);
+        case "/api/exam":
+          return await handleExam(request, env);
         case "/api/debug/user":
           return await handleDebugUser(request, env);
         case "/api/debug/raw":

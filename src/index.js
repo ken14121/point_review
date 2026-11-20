@@ -333,6 +333,96 @@ function isBetterAttempt(candidate, previous) {
   return (Date.parse(candidate.markedAt ?? "") || 0) > (Date.parse(previous.markedAt ?? "") || 0);
 }
 
+// --- スナップショット（KV）---------------------------------------------------
+// 42 API は Cloudflare のエッジからだと bot チャレンジで弾かれる（403）。
+// そこで PC 側のスクリプトが 42 を叩いて集計し、その結果だけをここへ送って保存する。
+// 読み出しは保存済みがあればそれを返し、無ければ直接 42 を叩く（ローカル開発用）。
+
+const SNAPSHOT_PREFIX = "snap:";
+
+async function readSnapshot(env, key) {
+  if (!env.DATA) return null;
+  const stored = await env.DATA.getWithMetadata(SNAPSHOT_PREFIX + key, { type: "json" });
+  if (!stored || stored.value === null) return null;
+  return { data: stored.value, updatedAt: stored.metadata?.updatedAt ?? null };
+}
+
+async function writeSnapshot(env, key, data) {
+  if (!env.DATA) throw new HttpError(503, "KV（DATA）が紐づいていません");
+  const updatedAt = new Date().toISOString();
+  await env.DATA.put(SNAPSHOT_PREFIX + key, JSON.stringify(data), { metadata: { updatedAt } });
+  return updatedAt;
+}
+
+/** スナップショットの鍵は push する側と読む側で同じ形にする。 */
+const snapshotKeys = {
+  reviewsHourly: () => "reviews-hourly",
+  cohort: (month, year) => `cohort:${month}:${year}`,
+  examProjects: () => "exam-projects",
+  exam: (month, year, projectId) => `exam:${month}:${year}:${projectId}`,
+};
+
+function timingSafeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/** PC 側のスクリプトからの保存。合言葉（PUSH_TOKEN）が一致したときだけ通す。 */
+async function handlePush(request, env) {
+  if (!env.PUSH_TOKEN) throw new HttpError(503, "PUSH_TOKEN が設定されていません");
+  const header = request.headers.get("authorization") || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  if (!token || !timingSafeEqual(token, env.PUSH_TOKEN)) {
+    throw new HttpError(401, "PUSH_TOKEN が一致しません");
+  }
+
+  const key = new URL(request.url).searchParams.get("key") || "";
+  if (!/^[a-z0-9:_-]{1,120}$/i.test(key)) throw new HttpError(400, "key が不正です");
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    throw new HttpError(400, "本文が JSON ではありません");
+  }
+  const updatedAt = await writeSnapshot(env, key, body);
+  return json({ key, updatedAt, ok: true });
+}
+
+/** 保存済みの一覧。画面で「何が入っているか」を出すのに使う。 */
+async function handleSnapshots(env) {
+  if (!env.DATA) return json({ mode: "live", snapshots: [] });
+  const listed = await env.DATA.list({ prefix: SNAPSHOT_PREFIX, limit: 1000 });
+  return json({
+    mode: "snapshot",
+    snapshots: listed.keys.map((entry) => ({
+      key: entry.name.slice(SNAPSHOT_PREFIX.length),
+      updatedAt: entry.metadata?.updatedAt ?? null,
+    })),
+  });
+}
+
+/**
+ * 時間ごとの件数から、指定期間の合計を出す。
+ * 区間は 1 時間単位なので、両端は時間境界に丸める。
+ */
+function sumHourly(series, fromMs, toMs) {
+  const start = Math.floor(fromMs / 3600000) * 3600000;
+  const end = Math.ceil(toMs / 3600000) * 3600000;
+  let total = 0;
+  let covered = 0;
+  for (const [hourISO, count] of series) {
+    const hourMs = Date.parse(hourISO);
+    if (hourMs >= start && hourMs < end) {
+      total += count;
+      covered += 1;
+    }
+  }
+  return { total, hours: covered, from: new Date(start).toISOString(), to: new Date(end).toISOString() };
+}
+
 function cacheGet(key) {
   const hit = countCache.get(key);
   if (!hit) return null;
@@ -390,7 +480,20 @@ const json = (data, status = 200) =>
 
 async function handleCount(request, env) {
   const url = new URL(request.url);
-  const { toMs, fromISO, toISO } = parseRange(url);
+  const { fromMs, toMs, fromISO, toISO } = parseRange(url);
+
+  const snapshot = await readSnapshot(env, snapshotKeys.reviewsHourly());
+  if (snapshot) {
+    const series = snapshot.data.series || [];
+    const summed = sumHourly(series, fromMs, toMs);
+    return json({
+      ...summed,
+      source: "snapshot",
+      updatedAt: snapshot.updatedAt,
+      coverage: { from: snapshot.data.from ?? null, to: snapshot.data.to ?? null },
+    });
+  }
+
   const key = `${fromISO}|${toISO}`;
 
   const cached = cacheGet(key);
@@ -400,7 +503,7 @@ async function handleCount(request, env) {
 
   const total = await fetchTotal(env, fromISO, toISO);
   cacheSet(key, total, toMs);
-  return json({ from: fromISO, to: toISO, total, cached: false });
+  return json({ from: fromISO, to: toISO, total, source: "live", cached: false });
 }
 
 async function handleCohort(request, env) {
@@ -415,6 +518,11 @@ async function handleCohort(request, env) {
     throw new HttpError(400, "pool_year は 4 桁の西暦で指定してください");
   }
 
+  const snapshot = await readSnapshot(env, snapshotKeys.cohort(poolMonth, poolYear));
+  if (snapshot) {
+    return json({ poolMonth, poolYear, ...snapshot.data, source: "snapshot", updatedAt: snapshot.updatedAt });
+  }
+
   const key = `cohort|${poolMonth}|${poolYear}`;
   const cached = cacheGet(key);
   if (cached !== null) return json({ poolMonth, poolYear, ...cached, cached: true });
@@ -426,6 +534,9 @@ async function handleCohort(request, env) {
 }
 
 async function handleExamProjects(env) {
+  const snapshot = await readSnapshot(env, snapshotKeys.examProjects());
+  if (snapshot) return json({ ...snapshot.data, source: "snapshot", updatedAt: snapshot.updatedAt });
+
   const cached = cacheGet("examProjects");
   if (cached !== null) return json({ ...cached, cached: true });
 
@@ -454,6 +565,21 @@ async function handleExam(request, env) {
   if (projectId && !/^\d{1,7}$/.test(projectId)) {
     throw new HttpError(400, "project_id は数値で指定してください");
   }
+
+  // 保存済みがあるならそれを返す（42 を叩かない）
+  const projectsSnapshot = await readSnapshot(env, snapshotKeys.examProjects());
+  if (projectsSnapshot) {
+    const stored = projectsSnapshot.data.exams || [];
+    if (!projectId) projectId = String(projectsSnapshot.data.defaultExamId ?? stored[stored.length - 1]?.id ?? "");
+    projectName = stored.find((exam) => String(exam.id) === projectId)?.name ?? null;
+    const snapshot = await readSnapshot(env, snapshotKeys.exam(poolMonth, poolYear, projectId));
+    if (snapshot) {
+      return json({ poolMonth, poolYear, projectId, projectName, ...snapshot.data,
+        source: "snapshot", updatedAt: snapshot.updatedAt });
+    }
+    throw new HttpError(404, `この組み合わせはまだ push されていません（${poolYear} 年 ${poolMonth} / project ${projectId}）`);
+  }
+
   const exams = await fetchExamProjects(env);
   if (!projectId) {
     const fallback = defaultExam(exams);
@@ -549,6 +675,16 @@ export default {
       }
       return Response.redirect(new URL("/", url).toString(), 302);
     }
+    if (url.pathname === "/api/push") {
+      if (request.method !== "PUT") return json({ error: "push は PUT です" }, 405);
+      try {
+        return await handlePush(request, env);
+      } catch (err) {
+        const status = err instanceof HttpError ? err.status : 500;
+        if (status >= 500) console.error(err);
+        return json({ error: err.message || "internal error" }, status);
+      }
+    }
     if (request.method !== "GET") {
       return json({ error: "GET のみ対応しています" }, 405);
     }
@@ -572,6 +708,8 @@ export default {
           return await handleDebugUser(request, env);
         case "/api/debug/raw":
           return await handleDebugRaw(request, env);
+        case "/api/snapshots":
+          return await handleSnapshots(env);
         case "/api/health":
           return json({ ok: true });
         default:

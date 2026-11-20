@@ -14,6 +14,46 @@ Cloudflare Workers のサイトです。エヴァポイントセールの開始�
 | `/cohort/` | ピシン同期の進捗（レベルの分布と一覧） |
 | `/exam/` | ピシン試験の結果（点数の分布と合否の一覧） |
 
+## 公開運用（push 方式）
+
+42 API は Cloudflare のエッジやデータセンターの IP からのアクセスを bot チャレンジで
+弾く（403）。実際に、デプロイした Worker から `/oauth/token` を叩くと 403 が返る。
+そこで **42 を叩くのは自分の PC**、**Worker は受け取った数字を配るだけ**に分ける。
+
+```
+PC (scripts/push.mjs) ──42 API──▶ 集計 ──PUT /api/push──▶ Worker ──▶ KV
+                                                   スマホ ──GET──▶ Worker ──▶ KV の数字
+```
+
+読み出しは保存済みがあればそれを返し、無ければ直接 42 を叩く。
+つまり**ローカル開発（`npm run dev`）はこれまでどおり生の API を見る**。
+
+### 1 回だけの準備
+
+1. Cloudflare のダッシュボードで **KV namespace** を作る（Storage & Databases → KV）
+2. その ID を `wrangler.jsonc` の `kv_namespaces` に入れる（binding 名は `DATA`）
+3. Worker の **Settings → Runtime variables and secrets** に `PUSH_TOKEN` を **Secret** で追加
+   （値は適当な長いランダム文字列。PC 側と同じものを使う）
+4. PC の `.dev.vars` に次を足す
+
+```
+PUSH_URL="https://point-review.<あなた>.workers.dev"
+PUSH_TOKEN="<上と同じ文字列>"
+```
+
+### 更新
+
+```bash
+node scripts/push.mjs
+```
+
+- 時間ごとのレビュー件数（既定 14 日ぶん）、同期の進捗、試験の結果をまとめて送る
+- 2 回目以降は**新しい時間ぶんだけ**取るので数十秒で終わる（初回は 14 日ぶんで約 3 分）
+- 対象のピシンは `POOLS` で指定する。例 `POOLS="september:2025,august:2026"`
+- 日数は `REVIEW_DAYS` で変えられる
+
+Windows のタスクスケジューラなどで 1 時間ごとに走らせれば、サイトは放っておいても更新される。
+
 ## 仕組み
 
 42 API はページングされたエンドポイントで総件数を `x-total` ヘッダに返すので、

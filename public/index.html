@@ -218,6 +218,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0
 .msg{font-size:12.5px;color:var(--text-secondary);margin-top:12px;}
 .msg.error{color:var(--danger);}
 .progress{font-size:11.5px;color:var(--text-muted);font-variant-numeric:tabular-nums;margin-top:10px;display:flex;align-items:center;gap:7px;}
+.stamp{font-size:11.5px;color:var(--text-muted);margin-top:10px;}
 footer{margin-top:22px;font-size:11.5px;color:var(--text-muted);line-height:1.75;}
 footer code{font-size:11px;background:var(--surface-1);border:1px solid var(--line);border-radius:4px;padding:1px 5px;}
 [hidden]{display:none !important;}
@@ -287,6 +288,7 @@ footer code{font-size:11px;background:var(--surface-1);border:1px solid var(--li
   </div>
   <div class="value empty" id="total"><span class="placeholder">—</span><span class="unit">件</span></div>
   <div class="range" id="range-label">—</div>
+  <p class="stamp" id="stamp" hidden></p>
   <div class="substats" id="substats" hidden>
     <div class="substat">
       <div class="label">期間</div>
@@ -362,6 +364,7 @@ const els = {
   breakdownMsg: $("breakdown-msg"),
   chartArea: $("chart-area"), gridlines: $("gridlines"), bars: $("bars"), xaxis: $("xaxis"),
   tableArea: $("table-area"), tableBody: $("table-body"),
+  stamp: $("stamp"),
   tooltip: $("tooltip"), footer: $("footer"), saveSale: $("save-sale"),
 };
 
@@ -434,10 +437,26 @@ async function apiCount(fromMs, toMs, signal) {
   const res = await fetch(url, { signal });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data.total;
+  return data;
 }
 
 // ── 集計（ヒーロー数値） ────────────────────────────────────
+/** 保存済み（PC から push された）データのときに、いつの時点かを出す。 */
+function showStamp(data) {
+  if (!data || data.source !== "snapshot") {
+    els.stamp.hidden = true;
+    return;
+  }
+  const at = data.updatedAt ? new Date(data.updatedAt) : null;
+  const when = at
+    ? new Date(at.getTime() + 9 * 3600000).toISOString().slice(0, 16).replace("T", " ")
+    : "不明";
+  els.stamp.hidden = false;
+  els.stamp.textContent =
+    `保存済みのデータ・最終更新 ${when}（JST）` +
+    (typeof data.hours === "number" ? ` ／ 件数は 1 時間単位で集計（${data.hours} 時間ぶん）` : "");
+}
+
 function setBusy(busy) {
   els.heroSpinner.hidden = !busy;
   els.total.classList.toggle("stale", busy && !els.total.classList.contains("empty"));
@@ -468,7 +487,8 @@ async function runCount() {
   els.rangeLabel.textContent = `${jstStamp(fromMs)} 〜 ${jstStamp(toMs)}（JST）`;
 
   try {
-    const total = await apiCount(fromMs, toMs, controller.signal);
+    const data = await apiCount(fromMs, toMs, controller.signal);
+    const total = data.total;
     const spanMs = toMs - fromMs;
     els.total.classList.remove("empty");
     els.total.innerHTML = `${nf.format(total)}<span class="unit">件</span>`;
@@ -476,6 +496,7 @@ async function runCount() {
     els.perDay.innerHTML = `${nf.format(Math.round((total / (spanMs / DAY_MS)) * 10) / 10)}<small>件</small>`;
     els.perHour.innerHTML = `${nf.format(Math.round((total / (spanMs / 3600000)) * 10) / 10)}<small>件</small>`;
     els.substats.hidden = false;
+    showStamp(data);
     resetBreakdown();
   } catch (err) {
     if (err.name === "AbortError") return;
@@ -580,7 +601,7 @@ async function loadBreakdown() {
     while (queue.length) {
       const bucket = queue.shift();
       try {
-        bucket.count = await apiCount(bucket.start, bucket.end);
+        bucket.count = (await apiCount(bucket.start, bucket.end)).total;
       } catch {
         bucket.count = 0;
         bucket.failed = true;

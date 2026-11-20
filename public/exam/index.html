@@ -43,8 +43,18 @@ body{
 header{margin-bottom:22px;}
 h1{font-size:19px;font-weight:600;}
 header p{color:var(--text-secondary);font-size:12.5px;margin-top:4px;}
-.backlink{font-size:11.5px;color:var(--text-muted);text-decoration:none;border-bottom:1px solid var(--line);}
-.backlink:hover{color:var(--text-secondary);}
+.tabs{display:flex;flex-wrap:wrap;gap:4px;margin-top:14px;border-bottom:1px solid var(--line);}
+.tabs a{
+  font-size:12.5px;color:var(--text-secondary);text-decoration:none;
+  padding:7px 13px;border:1px solid transparent;border-bottom:none;
+  border-radius:7px 7px 0 0;margin-bottom:-1px;transition:color .15s, background .15s;
+}
+.tabs a:hover{color:var(--text-primary);background:var(--surface-1);}
+.tabs a[aria-current="page"]{
+  color:var(--text-primary);font-weight:600;
+  background:var(--surface-1);border-color:var(--line);border-bottom:1px solid var(--surface-1);
+}
+.tabs a:focus-visible{outline:2px solid var(--series-1);outline-offset:-2px;}
 .card{background:var(--surface-1);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;margin-bottom:16px;}
 
 .filters{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;}
@@ -146,10 +156,11 @@ tr.failed{color:var(--text-muted);}
 <header>
   <h1>ピシン試験の結果</h1>
   <p id="subtitle">ピシンの試験の点数と合否を、受けた月ごとに一覧します。</p>
-  <p style="margin-top:8px">
-    <a class="backlink" href="/">← レビュー件数カウンター</a>
-    &nbsp;&nbsp;<a class="backlink" href="/cohort/">ピシン同期の進捗 →</a>
-  </p>
+  <nav class="tabs" aria-label="ページ切り替え">
+    <a href="/">レビュー件数</a>
+    <a href="/cohort/">同期の進捗</a>
+    <a href="/exam/" aria-current="page">試験の結果</a>
+  </nav>
 </header>
 
 <section class="card">

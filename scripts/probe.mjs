@@ -95,10 +95,11 @@ async function main() {
   const paths = process.argv.slice(2).length
     ? process.argv.slice(2)
     : FREEZE_CANDIDATES.map((path) =>
+        // CURSUS_USER を先に置くこと。USER を先に置くと CURSUS_USER の中の USER まで置き換わる。
         path
-          .replace("USER", String(userId ?? ""))
+          .replace("CURSUS_USER", String(cursusUserId ?? ""))
           .replace("CAMPUS", campusId)
-          .replace("CURSUS_USER", String(cursusUserId ?? "")),
+          .replace("USER", String(userId ?? "")),
       );
 
   console.log("");

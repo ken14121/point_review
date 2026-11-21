@@ -150,7 +150,7 @@ function render(label, cohort, limitDays) {
   console.log(`  ${limitDays === null ? "期限あり" : `期限 ${limitDays} 日以内`} ${soon.length} 名`);
   if (soon.length === 0) return;
   console.log("");
-  console.log("    残り  期限        レベル  login");
+  console.log("    残り  blackholed_at  レベル  login");
   for (const member of soon) {
     console.log(
       `    ${String(member.days).padStart(4)}日  ${member.blackholedAt.slice(0, 10)}  ` +
@@ -212,9 +212,10 @@ async function main() {
   }
 
   console.log(
-    "\n※ 日付は 42 API の cursus_users.blackholed_at です。" +
-    "intra の Milestone Ultimate Deadline とは別物で、ある学生では 85 日ずれていました。" +
-    "\n  並び順の目安にはなりますが、残り日数は intra の表示と一致しません。",
+    "\n※ 日付は 42 API の cursus_users.blackholed_at です。intra の Milestone Ultimate Deadline\n" +
+    "  とは別物で、実測したずれは一定ではありません（ある学生で 85 日、別の学生で 33 日）。\n" +
+    "  「誰が危ないか」の顔ぶれの目安にはなりますが、残り日数も順番も intra とは一致しません。\n" +
+    "  フリーズ中の人は期限が後ろへずれるため、この一覧から漏れます。",
   );
 }
 

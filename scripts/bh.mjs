@@ -5,10 +5,12 @@
  *   node scripts/bh.mjs september:2026
  *   node scripts/bh.mjs august:2026 september:2026
  *   node scripts/bh.mjs september:2026 --days 60     期限 60 日以内だけ
+ *   node scripts/bh.mjs september:2026 --offset 0    補正せず生の値を見る
  *
- * 注意: ここで出る日付は 42 API の cursus_users.blackholed_at。
- * intra のダッシュボードに出る "Milestone Ultimate Deadline" とは別物で、
- * ある学生では 85 日ずれていた。順番の目安にはなるが、残り日数は intra と一致しない。
+ * 日付の元は 42 API の cursus_users.blackholed_at。intra のダッシュボードに出る
+ * "Milestone Ultimate Deadline" とは別物で、実測したずれは一定ではない
+ * （レベル 0.00 の学生で 33 日、レベル 2.97 の学生で 85 日）。
+ * 既定ではレベル 0 の新入生で観測した 33 日ぶん前倒しして表示する。
  */
 
 import { readFile } from "node:fs/promises";
@@ -18,6 +20,14 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const API = "https://api.intra.42.fr";
 const DAY_MS = 86400000;
+/**
+ * blackholed_at から何日引くか。
+ * 2026 年 8・9 月ピシン出身でレベル 0.00 の学生が intra 上で「本日中に BH」と
+ * 出ていたとき、blackholed_at は 33 日先だった。その観測に合わせた既定値。
+ * レベルが上がっている学生では合わない（ある学生では 85 日ずれていた）ので、
+ * --offset で変えられるようにしてある。0 を渡せば生の値。
+ */
+const DEFAULT_OFFSET_DAYS = 33;
 // 綴りが違う月は 42 API 側で素通りして 0 件になり、ピシンが無いのと区別がつかない。
 const MONTHS = [
   "january", "february", "march", "april", "may", "june",
@@ -132,15 +142,23 @@ async function cohortOf(token, config, month, year) {
   return { pisciners: pisciners.length, members: [...byUser.values()] };
 }
 
-function render(label, cohort, limitDays) {
+function render(label, cohort, limitDays, offsetDays) {
   const now = Date.now();
   const withDeadline = cohort.members
     .filter((member) => member.blackholedAt)
-    .map((member) => ({ ...member, days: Math.ceil((Date.parse(member.blackholedAt) - now) / DAY_MS) }))
+    .map((member) => {
+      const adjustedMs = Date.parse(member.blackholedAt) - offsetDays * DAY_MS;
+      return {
+        ...member,
+        adjusted: new Date(adjustedMs).toISOString().slice(0, 10),
+        days: Math.ceil((adjustedMs - now) / DAY_MS),
+      };
+    })
     .sort((a, b) => a.days - b.days);
 
-  const reached = withDeadline.filter((member) => member.days <= 0);
-  const upcoming = withDeadline.filter((member) => member.days > 0);
+  // 残り 0 日は「今日が期限」。一覧に残す（到達済みは過ぎた人だけ）。
+  const reached = withDeadline.filter((member) => member.days < 0);
+  const upcoming = withDeadline.filter((member) => member.days >= 0);
   const soon = limitDays === null ? upcoming : upcoming.filter((member) => member.days <= limitDays);
   const noDeadline = cohort.members.length - withDeadline.length;
 
@@ -150,10 +168,16 @@ function render(label, cohort, limitDays) {
   console.log(`  ${limitDays === null ? "期限あり" : `期限 ${limitDays} 日以内`} ${soon.length} 名`);
   if (soon.length === 0) return;
   console.log("");
-  console.log("    残り  blackholed_at  レベル  login");
+  console.log(
+    offsetDays === 0
+      ? "    残り  期限(生)    レベル  login"
+      : "    残り  期限(補正)  期限(生)    レベル  login",
+  );
   for (const member of soon) {
+    const raw = member.blackholedAt.slice(0, 10);
     console.log(
-      `    ${String(member.days).padStart(4)}日  ${member.blackholedAt.slice(0, 10)}  ` +
+      `    ${String(member.days).padStart(4)}日  ` +
+      (offsetDays === 0 ? `${raw}  ` : `${member.adjusted}  ${raw}  `) +
       `${member.level.toFixed(2).padStart(6)}  ${member.login}`,
     );
   }
@@ -171,9 +195,20 @@ async function main() {
       process.exit(1);
     }
   }
+  const offsetIndex = args.indexOf("--offset");
+  let offsetDays = DEFAULT_OFFSET_DAYS;
+  if (offsetIndex !== -1) {
+    offsetDays = Number(args[offsetIndex + 1]);
+    args.splice(offsetIndex, 2);
+    if (!Number.isFinite(offsetDays)) {
+      console.error("--offset には数値を指定してください");
+      process.exit(1);
+    }
+  }
   if (args.length === 0) {
-    console.error("使い方: node scripts/bh.mjs <月>:<年> [<月>:<年> ...] [--days 60]");
+    console.error("使い方: node scripts/bh.mjs <月>:<年> [<月>:<年> ...] [--days 60] [--offset 33]");
     console.error("  例: node scripts/bh.mjs august:2026 september:2026 --days 60");
+    console.error("  --offset を省くと blackholed_at を 33 日前倒しして表示します（--offset 0 で生の値）");
     process.exit(1);
   }
 
@@ -204,17 +239,22 @@ async function main() {
 
   for (const { month, year } of pools) {
     const cohort = await cohortOf(token, config, month, year);
-    render(`Piscine ${month} ${year}`, cohort, limitDays);
+    render(`Piscine ${month} ${year}`, cohort, limitDays, offsetDays);
     if (cohort.pisciners === 0) {
       console.log("  ※ 0 名でした。この月にピシンが無かったか、年が違う可能性があります");
       console.log("     node scripts/pools.mjs " + year + " で確認できます");
     }
   }
 
+  if (offsetDays === 0) {
+    console.log("\n※ 補正なし。42 API の cursus_users.blackholed_at をそのまま出しています。");
+  } else {
+    console.log(`\n※ blackholed_at を ${offsetDays} 日前倒しして表示しています（--offset 0 で生の値）。`);
+  }
   console.log(
-    "\n※ 日付は 42 API の cursus_users.blackholed_at です。intra の Milestone Ultimate Deadline\n" +
-    "  とは別物で、実測したずれは一定ではありません（ある学生で 85 日、別の学生で 33 日）。\n" +
-    "  「誰が危ないか」の顔ぶれの目安にはなりますが、残り日数も順番も intra とは一致しません。\n" +
+    "  intra の Milestone Ultimate Deadline は 42 の公開 API に無く、blackholed_at とのずれは\n" +
+    "  一定ではありません（レベル 0.00 の学生で 33 日、レベル 2.97 の学生で 85 日）。\n" +
+    "  既定の補正はレベル 0 の新入生に合わせたものなので、進んでいる学生では合いません。\n" +
     "  フリーズ中の人は期限が後ろへずれるため、この一覧から漏れます。",
   );
 }

@@ -18,6 +18,11 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const API = "https://api.intra.42.fr";
 const DAY_MS = 86400000;
+// 綴りが違う月は 42 API 側で素通りして 0 件になり、ピシンが無いのと区別がつかない。
+const MONTHS = [
+  "january", "february", "march", "april", "may", "june",
+  "july", "august", "september", "october", "november", "december",
+];
 
 async function loadConfig() {
   const config = { ...process.env };
@@ -172,17 +177,38 @@ async function main() {
     process.exit(1);
   }
 
+  // 42 を叩く前に指定を確かめる（綴り違いは 0 件になって気づきにくいので）
+  const pools = [];
+  for (const spec of args) {
+    const [rawMonth, year] = spec.split(":");
+    const month = (rawMonth || "").toLowerCase();
+    if (!month || !year) {
+      console.error(`指定が不正です: ${spec}（例 september:2026）`);
+      process.exit(1);
+    }
+    if (!MONTHS.includes(month)) {
+      console.error(`月の綴りが違います: ${rawMonth}`);
+      console.error(`  使えるのは ${MONTHS.join(", ")}`);
+      console.error("  どの月にピシンがあるかは node scripts/pools.mjs <年> で確認できます");
+      process.exit(1);
+    }
+    if (!/^20\d{2}$/.test(year)) {
+      console.error(`年の指定が不正です: ${year}（例 september:2026）`);
+      process.exit(1);
+    }
+    pools.push({ month, year });
+  }
+
   const config = await loadConfig();
   const token = await getToken(config);
 
-  for (const spec of args) {
-    const [month, year] = spec.split(":");
-    if (!month || !year) {
-      console.error(`指定が不正です: ${spec}（例 september:2026）`);
-      continue;
-    }
-    const cohort = await cohortOf(token, config, month.toLowerCase(), year);
+  for (const { month, year } of pools) {
+    const cohort = await cohortOf(token, config, month, year);
     render(`Piscine ${month} ${year}`, cohort, limitDays);
+    if (cohort.pisciners === 0) {
+      console.log("  ※ 0 名でした。この月にピシンが無かったか、年が違う可能性があります");
+      console.log("     node scripts/pools.mjs " + year + " で確認できます");
+    }
   }
 
   console.log(

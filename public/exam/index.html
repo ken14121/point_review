@@ -133,6 +133,14 @@ td.rank{color:var(--text-muted);width:2.5em;}
 td.muted{color:var(--text-muted);}
 .tag{font-size:10.5px;border:1px solid var(--line);border-radius:4px;padding:1px 6px;color:var(--text-muted);}
 
+.find{display:flex;align-items:center;gap:8px;margin-top:10px;}
+.find input{
+  font-family:inherit;font-size:13px;color:var(--text-primary);background:var(--bg);
+  border:1px solid var(--line);border-radius:6px;padding:7px 9px;min-width:220px;
+}
+.find input:focus-visible{outline:2px solid var(--series-1);outline-offset:1px;}
+.find .hit{font-size:11.5px;color:var(--text-muted);}
+@media(max-width:560px){ .find input{flex:1 1 auto;min-width:0;} }
 .msg{font-size:12.5px;color:var(--text-secondary);margin-top:12px;}
 .msg.error{color:var(--danger);}
 .stamp{font-size:11.5px;color:var(--text-muted);margin-top:10px;}
@@ -226,6 +234,10 @@ tr.failed{color:var(--text-muted);}
 <section class="card" id="list-card" hidden>
   <h2>一覧</h2>
   <div class="sub" id="list-sub"></div>
+  <div class="find">
+    <input type="search" id="find" placeholder="login で絞り込み" autocomplete="off" aria-label="login で絞り込み">
+    <span class="hit" id="find-hit"></span>
+  </div>
   <div class="tablewrap">
     <table>
       <thead>
@@ -260,6 +272,7 @@ const els = {
   gridlines: $("gridlines"), bars: $("bars"), xaxis: $("xaxis"),
   listCard: $("list-card"), listSub: $("list-sub"), tbody: $("tbody"),
   stamp: $("stamp"),
+  find: $("find"), findHit: $("find-hit"),
   tooltip: $("tooltip"), footer: $("footer"), subtitle: $("subtitle"),
 };
 
@@ -505,14 +518,22 @@ function renderTable() {
   els.listSub.textContent = `${rows.length} 人 / 列ヘッダをクリックで並べ替え。` +
     (duplicateRows > 0 ? ` 複数回の受験が ${duplicateRows} 件あったので、良いほうの回だけを表示しています。` : "");
 
+  // 順位は全体での位置。絞り込んでも自分が何番目かが分かるようにする。
+  const query = els.find.value.trim().toLowerCase();
+  const ranked = rows.map((entry, index) => ({ entry, rank: index + 1 }));
+  const visible = query
+    ? ranked.filter(({ entry }) => entry.login.toLowerCase().includes(query))
+    : ranked;
+  els.findHit.textContent = query ? `${rows.length} 人中 ${visible.length} 人` : "";
+
   els.tbody.innerHTML = "";
-  rows.forEach((attempt, index) => {
+  visible.forEach(({ entry: attempt, rank }) => {
     const tr = document.createElement("tr");
     if (!isPass(attempt)) tr.className = "failed";
 
-    const rank = document.createElement("td");
-    rank.className = "rank";
-    rank.textContent = String(index + 1);
+    const rankCell = document.createElement("td");
+    rankCell.className = "rank";
+    rankCell.textContent = String(rank);
 
     const login = document.createElement("td");
     login.textContent = attempt.login;
@@ -534,13 +555,14 @@ function renderTable() {
     const marked = document.createElement("td");
     marked.textContent = attempt.markedAt ? attempt.markedAt.slice(0, 10) : "—";
 
-    tr.append(rank, login, mark, result, marked);
+    tr.append(rankCell, login, mark, result, marked);
     els.tbody.appendChild(tr);
   });
 }
 
 els.load.addEventListener("click", load);
 els.exam.addEventListener("change", () => { if (els.exam.value) load(); });
+els.find.addEventListener("input", () => { if (attempts.length) renderTable(); });
 for (const th of document.querySelectorAll("th.sortable")) {
   th.addEventListener("click", () => {
     const key = th.dataset.sort;

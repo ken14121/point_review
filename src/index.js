@@ -288,14 +288,25 @@ function defaultExam(exams) {
  * cursus_users と同じく、user_id をまとめて projects_users に渡す。
  */
 async function fetchExamResults(env, poolMonth, poolYear, projectId) {
+  const cursusId = String(env.CURSUS_ID || "21");
   const pisciners = await fetchPisciners(env, poolMonth, poolYear);
   const usersById = new Map(pisciners.map((user) => [user.id, user]));
 
   const rows = [];
+  // 本科（42cursus）に在籍が始まった人。試験の validated? とは別物で、
+  // 「ピシンに受かって本科へ進めたか」はこちらで判定する。
+  const admitted = new Set();
   for (const ids of chunk([...usersById.keys()], 30)) {
     const url = new URL(`${API_ORIGIN}/v2/projects/${projectId}/projects_users`);
     url.searchParams.set("filter[user_id]", ids.join(","));
     rows.push(...(await fetchAllPages(env, url, { maxPages: 3 })));
+
+    const cursusUrl = new URL(`${API_ORIGIN}/v2/cursus/${cursusId}/cursus_users`);
+    cursusUrl.searchParams.set("filter[user_id]", ids.join(","));
+    for (const row of await fetchAllPages(env, cursusUrl, { maxPages: 2 })) {
+      const id = row.user?.id ?? row.user_id;
+      if (id !== undefined && id !== null) admitted.add(id);
+    }
   }
 
   // 再受験があると同じ人の行が複数来るので、いちばん良い回を 1 つ残す。
@@ -307,6 +318,7 @@ async function fetchExamResults(env, poolMonth, poolYear, projectId) {
       login: user?.login ?? `#${userId}`,
       mark: row.final_mark === null || row.final_mark === undefined ? null : Number(row.final_mark),
       validated: row["validated?"] ?? null,
+      admitted: admitted.has(userId),
       status: row.status || null,
       markedAt: row.marked_at || null,
       occurrence: row.occurrence ?? null,

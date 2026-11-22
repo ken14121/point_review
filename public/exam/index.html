@@ -198,7 +198,7 @@ tr.failed{color:var(--text-muted);}
 
 <section class="card hero">
   <div class="label">
-    <span id="hero-label">合格者</span>
+    <span id="hero-label">本科に進んだ人</span>
     <span class="spinner big" id="spinner" hidden></span>
   </div>
   <div class="value empty" id="count"><span class="placeholder">—</span><span class="unit">人</span></div>
@@ -207,9 +207,9 @@ tr.failed{color:var(--text-muted);}
   <div class="substats" id="substats" hidden>
     <div class="substat"><div class="label">ピシン参加者</div><div class="value" id="pisciners">—<small>人</small></div></div>
     <div class="substat"><div class="label">受験者</div><div class="value" id="takers">—<small>人</small></div></div>
-    <div class="substat"><div class="label">合格率</div><div class="value" id="rate">—<small>%</small></div></div>
+    <div class="substat"><div class="label">通過率</div><div class="value" id="rate">—<small>%</small></div></div>
     <div class="substat"><div class="label">平均点</div><div class="value" id="mean">—</div></div>
-    <div class="substat"><div class="label">合格者の最低点</div><div class="value" id="minpass">—</div></div>
+    <div class="substat"><div class="label">通過者の最低点</div><div class="value" id="minpass">—</div></div>
   </div>
 </section>
 
@@ -233,7 +233,7 @@ tr.failed{color:var(--text-muted);}
           <th></th>
           <th class="sortable" data-sort="login">login</th>
           <th class="sortable num" data-sort="mark">点数</th>
-          <th class="sortable" data-sort="validated">合否</th>
+          <th class="sortable" data-sort="admitted">本科</th>
           <th class="sortable" data-sort="markedAt">採点日</th>
         </tr>
       </thead>
@@ -380,7 +380,12 @@ async function load() {
   }
 }
 
-const isPass = (attempt) => attempt.validated === true;
+/**
+ * 「合格」は本科（42cursus）に在籍が始まったかどうか。
+ * 試験の validated? とは別物で、点数が高くても本科に進んでいない人、
+ * 点数が 0 でも進んでいる人がいる。
+ */
+const isPass = (attempt) => attempt.admitted === true;
 
 function render() {
   const marks = attempts.map((a) => a.mark).filter((m) => typeof m === "number").sort((a, b) => a - b);
@@ -517,15 +522,13 @@ function renderTable() {
     mark.textContent = typeof attempt.mark === "number" ? nf.format(attempt.mark) : "—";
 
     const result = document.createElement("td");
-    if (attempt.validated === true) {
+    if (attempt.admitted === true) {
       const tag = document.createElement("span");
       tag.className = "tag ok";
       tag.textContent = "合格";
       result.appendChild(tag);
-    } else if (attempt.validated === false) {
-      result.textContent = "不合格";
     } else {
-      result.textContent = attempt.status || "—";
+      result.textContent = "不合格";
     }
 
     const marked = document.createElement("td");
@@ -562,7 +565,9 @@ for (const th of document.querySelectorAll("th.sortable")) {
         `42 API の <code>/v2/campus/:id/users</code> を <code>pool_month</code> / <code>pool_year</code> で絞り、` +
         `その人たちの <code>/v2/projects/:id/projects_users</code> から <code>final_mark</code> と ` +
         `<code>validated?</code> を読んでいます。<br>` +
-        `合否は 42 側の判定 (<code>validated?</code>) をそのまま出しています（点数からこちらで判定してはいません）。` +
+        `「本科」は <code>/v2/cursus/21/cursus_users</code> に在籍の記録があるかどうかで判定しています。` +
+        `試験の <code>validated?</code> とは別物で、点数が高くても本科に進んでいない人、` +
+        `点数が 0 でも進んでいる人がいます。<br>` +
         `受験記録が無い人は一覧に出ません。`;
     })
     .catch(() => {});

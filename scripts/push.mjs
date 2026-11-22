@@ -263,12 +263,19 @@ function isBetterAttempt(candidate, previous) {
 
 async function buildExam(token, config, month, year, projectId) {
   const campusId = config.CAMPUS_ID || "26";
+  const cursusId = config.CURSUS_ID || "21";
   const pisciners = await fetchPisciners(token, campusId, month, year);
   const usersById = new Map(pisciners.map((user) => [user.id, user]));
 
   const rows = [];
+  // 本科（42cursus）に在籍が始まった人。試験の validated? とは別物。
+  const admitted = new Set();
   for (const ids of chunk([...usersById.keys()], 30)) {
     rows.push(...(await apiAll(token, `/v2/projects/${projectId}/projects_users`, { "filter[user_id]": ids.join(",") }, 3)));
+    for (const row of await apiAll(token, `/v2/cursus/${cursusId}/cursus_users`, { "filter[user_id]": ids.join(",") }, 2)) {
+      const id = row.user?.id ?? row.user_id;
+      if (id !== undefined && id !== null) admitted.add(id);
+    }
   }
 
   const byUser = new Map();
@@ -279,6 +286,7 @@ async function buildExam(token, config, month, year, projectId) {
       login: user?.login ?? `#${userId}`,
       mark: row.final_mark === null || row.final_mark === undefined ? null : Number(row.final_mark),
       validated: row["validated?"] ?? null,
+      admitted: admitted.has(userId),
       status: row.status || null,
       markedAt: row.marked_at || null,
       occurrence: row.occurrence ?? null,
